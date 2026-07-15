@@ -1,0 +1,74 @@
+name: Release Extension
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Verify release version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          node -e '
+            const version = process.env.TAG.replace(/^v/, "");
+            const packageVersion = require("./package.json").version;
+            const manifestVersion = require("./public/manifest.json").version;
+            if (version !== packageVersion || version !== manifestVersion) {
+              throw new Error(
+                "Version mismatch: tag=" + version +
+                ", package=" + packageVersion +
+                ", manifest=" + manifestVersion
+              );
+            }
+          '
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate --registry=https://registry.npmjs.org
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Package extension
+        run: |
+          cd dist
+          python3 -m zipfile -c "../bilibili-audio-player-${GITHUB_REF_NAME}.zip" *
+          cd ..
+          sha256sum "bilibili-audio-player-${GITHUB_REF_NAME}.zip" > "bilibili-audio-player-${GITHUB_REF_NAME}.zip.sha256"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "bilibili-audio-player-${GITHUB_REF_NAME}.zip" \
+            "bilibili-audio-player-${GITHUB_REF_NAME}.zip.sha256" \
+            --verify-tag \
+            --title "Bilibili Audio Player ${GITHUB_REF_NAME}" \
+            --generate-notes

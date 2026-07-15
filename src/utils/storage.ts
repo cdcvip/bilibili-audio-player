@@ -82,3 +82,79 @@ export async function getPlaybackHistory(): Promise<HistoryItem[]> {
     .map(parseHistoryItem)
     .filter((item): item is HistoryItem => item !== null);
 }
+
+export interface PlaybackProgress {
+  currentTime: number;
+  duration: number;
+  updatedAt: string;
+}
+
+type PlaybackProgressMap = Record<string, PlaybackProgress>;
+
+function progressKey(bvid: string, cid: string): string {
+  return `${bvid}:${cid}`;
+}
+
+function parsePlaybackProgress(value: unknown): PlaybackProgress | null {
+  if (!isRecord(value) ||
+      typeof value.currentTime !== 'number' || !Number.isFinite(value.currentTime) || value.currentTime < 0 ||
+      typeof value.duration !== 'number' || !Number.isFinite(value.duration) || value.duration <= 0 ||
+      !isString(value.updatedAt)) {
+    return null;
+  }
+
+  return {
+    currentTime: value.currentTime,
+    duration: value.duration,
+    updatedAt: value.updatedAt,
+  };
+}
+
+async function getPlaybackProgressMap(): Promise<PlaybackProgressMap> {
+  const result = await chrome.storage.local.get<{ playbackProgress?: unknown }>('playbackProgress');
+  if (!isRecord(result.playbackProgress)) return {};
+
+  const progress: PlaybackProgressMap = {};
+  Object.entries(result.playbackProgress).forEach(([key, value]) => {
+    const parsed = parsePlaybackProgress(value);
+    if (parsed) progress[key] = parsed;
+  });
+  return progress;
+}
+
+export async function getPlaybackProgress(bvid: string, cid: string): Promise<PlaybackProgress | null> {
+  const progress = await getPlaybackProgressMap();
+  return progress[progressKey(bvid, cid)] || null;
+}
+
+export async function savePlaybackProgress(
+  bvid: string,
+  cid: string,
+  currentTime: number,
+  duration: number,
+): Promise<void> {
+  if (!Number.isFinite(currentTime) || currentTime < 0 ||
+      !Number.isFinite(duration) || duration <= 0) return;
+
+  const progress = await getPlaybackProgressMap();
+  progress[progressKey(bvid, cid)] = {
+    currentTime: Math.min(currentTime, duration),
+    duration,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const recentEntries = Object.entries(progress)
+    .sort(([, first], [, second]) => second.updatedAt.localeCompare(first.updatedAt))
+    .slice(0, 200);
+  const recentProgress: PlaybackProgressMap = {};
+  recentEntries.forEach(([key, value]) => {
+    recentProgress[key] = value;
+  });
+  await chrome.storage.local.set({ playbackProgress: recentProgress });
+}
+
+export async function clearPlaybackProgress(bvid: string, cid: string): Promise<void> {
+  const progress = await getPlaybackProgressMap();
+  delete progress[progressKey(bvid, cid)];
+  await chrome.storage.local.set({ playbackProgress: progress });
+}

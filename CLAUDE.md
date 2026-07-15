@@ -46,7 +46,7 @@ Static HTML files in `public/` are copied verbatim to `dist/` alongside the comp
 **Autoplay policy**: New popup windows have no user-interaction history; `play()` is blocked by Chrome. Workaround: set `audioPlayer.muted = true` before `play()`, then unmute in the `.then()` callback.
 
 **Storage**:
-- `chrome.storage.local` — WBI sign keys cache (`signData`, `spiData`, `cacheTime`), play history, user playlists (`userPlaylists`)
+- `chrome.storage.local` — WBI sign keys cache (`signData`, `spiData`, `cacheTime`), play history, per-part resume positions (`playbackProgress`), playback rate, and user playlists (`userPlaylists`)
 
 Both storage areas are restricted to trusted extension contexts; the Bilibili content script cannot read them.
 

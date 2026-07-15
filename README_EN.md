@@ -20,6 +20,7 @@ Bilibili Audio Player is a Chrome extension that extracts audio from Bilibili vi
     * View playlist contents and play audio from them on the settings page.
 9. **Multi-part selection:** Detects all video parts, respects `?p=` URLs, supports in-player switching, and automatically continues to the next part.
 10. **Playback speed:** Supports 0.25×–3× speed, ±0.05× fine adjustments, and remembers the last selection.
+11. **Playback progress:** Saves progress per video part, resumes automatically, and clears completed entries.
 
 ## Installation
 
@@ -65,6 +66,7 @@ The player window offers the following controls:
 - Multi-part episode selection
 - 0.25×–3× playback speed with ±0.05× fine adjustment
 - Add to Playlist button (add the current audio to one of your custom playlists)
+- Favoriting automatically creates a "默认合集" playlist when none exists
 - Settings button (quick access to the settings page)
 
 ## Troubleshooting

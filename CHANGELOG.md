@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2026-07-15
+
+### Added
+- Persistent per-part playback progress with automatic resume and cleanup after completion.
+- Automatic creation of a "默认合集" playlist when favoriting without an existing playlist.
+- Tag-triggered GitHub Release workflow with version validation, ZIP packaging, generated notes, and SHA-256 checksum.
+
+### Changed
+- Refined the compact player layout with clearer information, transport, speed, timeline, and volume sections.
+
 ## [1.1.0] - 2026-07-15
 
 ### Added

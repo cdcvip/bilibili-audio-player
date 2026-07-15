@@ -1,7 +1,13 @@
 // Player page script
 import { Playlist, PlaylistItem } from './utils/playlistTypes'; // 1. Import Playlist Types
 import { requestBilibiliAudio } from './utils/runtimeApi';
-import { getPlaybackHistory, getUserPlaylists } from './utils/storage';
+import {
+  clearPlaybackProgress,
+  getPlaybackHistory,
+  getPlaybackProgress,
+  getUserPlaylists,
+  savePlaybackProgress,
+} from './utils/storage';
 import { BilibiliVideoInfo, HistoryItem } from "./utils/types";
 
 
@@ -58,6 +64,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const maxPlaybackRate = 3;
   const playbackRateStep = 0.05;
   let preferredPlaybackRate = 1;
+  let pendingResumePosition = 0;
+  let lastProgressSaveAt = 0;
+  let progressWriteQueue: Promise<void> = Promise.resolve();
+  let currentTrackCompleted = false;
 
   type CurrentTrackData = BilibiliVideoInfo;
 
@@ -155,11 +165,20 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     
+    if (videoData && audioPlayer.currentSrc && !currentTrackCompleted) {
+      await persistCurrentProgress(true);
+    }
+
     // Store videoData at module level for access by other functions
     videoData = data; // Ensure videoData is assigned here
+    currentTrackCompleted = false;
 
-    // Update playback history
-    await updatePlaybackHistory(videoData); // Pass videoData explicitly
+    const [, savedProgress] = await Promise.all([
+      updatePlaybackHistory(videoData),
+      getPlaybackProgress(videoData.bvid, videoData.cid),
+    ]);
+    pendingResumePosition = savedProgress?.currentTime || 0;
+    lastProgressSaveAt = 0;
     
     // Set video info
     headerTitle.textContent = videoData.title;
@@ -366,7 +385,39 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     } else {
       audioPlayer.pause();
+      void persistCurrentProgress(true);
     }
+  }
+
+  function enqueueProgressWrite(operation: () => Promise<void>): Promise<void> {
+    progressWriteQueue = progressWriteQueue
+      .then(operation)
+      .catch(error => console.error('Error persisting playback progress:', error));
+    return progressWriteQueue;
+  }
+
+  function persistCurrentProgress(force = false): Promise<void> {
+    if (currentTrackCompleted || !videoData || !audioPlayer.currentSrc ||
+        !Number.isFinite(audioPlayer.currentTime) ||
+        !Number.isFinite(audioPlayer.duration) || audioPlayer.duration <= 0) {
+      return progressWriteQueue;
+    }
+
+    const now = Date.now();
+    if (!force && now - lastProgressSaveAt < 5000) return progressWriteQueue;
+    lastProgressSaveAt = now;
+
+    const { bvid, cid } = videoData;
+    const currentTime = audioPlayer.currentTime;
+    const duration = audioPlayer.duration;
+    return enqueueProgressWrite(() => savePlaybackProgress(bvid, cid, currentTime, duration));
+  }
+
+  function clearCurrentProgress(): Promise<void> {
+    if (!videoData) return progressWriteQueue;
+    const { bvid, cid } = videoData;
+    pendingResumePosition = 0;
+    return enqueueProgressWrite(() => clearPlaybackProgress(bvid, cid));
   }
 
   function seekBy(seconds: number) {
@@ -397,6 +448,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function initializeCustomControls() {
     // Audio ended listener (for playlist progression)
     audioPlayer.addEventListener('ended', () => {
+      currentTrackCompleted = true;
+      void clearCurrentProgress();
       if (isPlaylistMode && currentPlaylist) {
         currentTrackIndex++;
         if (currentTrackIndex < currentPlaylist.length) {
@@ -461,6 +514,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     audioPlayer.addEventListener('loadedmetadata', () => {
       audioPlayer.playbackRate = preferredPlaybackRate;
+      if (pendingResumePosition >= 3 &&
+          pendingResumePosition < audioPlayer.duration - 3) {
+        audioPlayer.currentTime = pendingResumePosition;
+        showPlayerMessage(`已从 ${formatTime(pendingResumePosition)} 继续播放`, 'info');
+      }
+      pendingResumePosition = 0;
     });
     
     // Progress bar
@@ -474,6 +533,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const currentTime = formatTime(audioPlayer.currentTime);
       const duration = formatTime(audioPlayer.duration);
       timeDisplay.textContent = `${currentTime} / ${duration}`;
+      void persistCurrentProgress();
     });
     
     // Click on progress bar to seek
@@ -482,6 +542,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const rect = progressContainer.getBoundingClientRect();
       const pos = (e.clientX - rect.left) / rect.width;
       audioPlayer.currentTime = pos * audioPlayer.duration;
+      void persistCurrentProgress(true);
     });
     
     // Volume control
@@ -514,7 +575,16 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Close button
     closeBtn.addEventListener('click', () => {
+      void persistCurrentProgress(true);
       window.close();
+    });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') void persistCurrentProgress(true);
+    });
+
+    window.addEventListener('pagehide', () => {
+      void persistCurrentProgress(true);
     });
 
     // Add to Playlist button event listener (5)
@@ -564,16 +634,23 @@ document.addEventListener('DOMContentLoaded', () => {
           const playlists = await getUserPlaylists();
 
           if (playlists.length === 0) {
-            showPlayerMessage('请先在设置页面创建播放合集。', 'error');
-            // Optionally, direct them to settings or show a confirm to open settings
-            showConfirmationModal(
-              "您还没有创建任何播放合集。是否现在前往设置页面创建？",
-              () => { chrome.runtime.openOptionsPage(); },
-              () => {}, // Optional: do something on cancel
-              "提示",
-              "前往设置",
-              "稍后"
-            );
+            const now = new Date().toISOString();
+            const defaultPlaylist: Playlist = {
+              id: `default-${Date.now()}`,
+              name: '默认合集',
+              items: [{
+                id: Date.now().toString(),
+                title: currentVideoData.title,
+                bvid: currentVideoData.bvid,
+                cid: currentVideoData.cid,
+                addedAt: now,
+              }],
+              createdAt: now,
+              updatedAt: now,
+            };
+            await chrome.storage.local.set({ userPlaylists: [defaultPlaylist] });
+            showPlayerMessage('已创建“默认合集”并加入当前音频', 'success');
+            updateFavoriteIcon(true);
             return;
           }
 
