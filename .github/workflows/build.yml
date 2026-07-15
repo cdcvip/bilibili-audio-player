@@ -1,5 +1,8 @@
 name: Build Project
 
+permissions:
+  contents: read
+
 on:
   push:
     branches:
@@ -14,22 +17,28 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
-          node-version: '18' # Specify your desired Node.js version
+          node-version: '22'
+          cache: npm
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci --ignore-scripts --registry=https://registry.npmjs.org
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate --registry=https://registry.npmjs.org
 
       - name: Build project
         run: npm run build
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5
         with:
           name: bilibili-audio-player-extension
-          path: dist/ 
-          if-no-files-found: error # Error if the app is not found 
+          path: dist/
+          if-no-files-found: error

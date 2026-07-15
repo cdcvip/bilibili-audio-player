@@ -8,14 +8,20 @@ export interface BilibiliVideoInfo {
   cid: string;       // Content ID (essential for playback, especially multi-part videos)
   bvid: string;      // BV ID (preferred identifier)
   audioUrl: string;  // Freshly fetched audio URL with expiry
+  page: number;      // Selected part number (1-based)
+  pages: BilibiliPageInfo[];
 }
 
-/**
- * Authentication configuration, primarily SESSDATA.
- */
+export interface BilibiliPageInfo {
+  cid: string;
+  page: number;
+  part: string;
+  duration: number;
+}
+
+/** Authentication material created transiently inside the background worker. */
 export interface AuthConfig {
-  SESSDATA: string;
-  cookieString?: string; // Full browser cookie string (buvid3, bili_ticket, etc.)
+  cookieString: string;
 }
 
 /**
@@ -25,7 +31,7 @@ export interface HistoryItem {
   title: string;
   bvid: string;      // Bilibili Video ID (primary identifier)
   cid: string;       // Bilibili Content ID
-  audioUrl?: string; // Optional: Stores the most recently fetched audio URL (mainly for quick display if very recent)
+  audioUrl?: string; // Legacy-only field; new writes omit temporary CDN URLs
   timestamp: string;   // ISO string format for when it was last played
 } 
 export interface SignData {
@@ -40,9 +46,15 @@ export interface SignData {
  */
 export interface ViewApiResponseData {
   title: string;
-  cid: string;
+  cid: string | number;
   bvid: string;
-  aid: string;
+  aid: string | number;
+  pages?: Array<{
+    cid: string | number;
+    page: number;
+    part: string;
+    duration: number;
+  }>;
   [key: string]: any; // Allow other properties not strictly typed here
 }
 

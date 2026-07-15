@@ -1,6 +1,8 @@
 // Player page script
 import { Playlist, PlaylistItem } from './utils/playlistTypes'; // 1. Import Playlist Types
-import { HistoryItem, BilibiliVideoInfo, AuthConfig } from "./utils/types"; // Import shared types
+import { requestBilibiliAudio } from './utils/runtimeApi';
+import { getPlaybackHistory, getUserPlaylists } from './utils/storage';
+import { BilibiliVideoInfo, HistoryItem } from "./utils/types";
 
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -22,6 +24,13 @@ document.addEventListener('DOMContentLoaded', () => {
   const volumeIcon = document.getElementById('volume-icon') as HTMLDivElement;
   const volumeSlider = document.getElementById('volume-slider') as HTMLDivElement;
   const volumeLevel = document.getElementById('volume-level') as HTMLDivElement;
+  const episodeControl = document.getElementById('episode-control') as HTMLDivElement;
+  const episodeSelect = document.getElementById('episode-select') as HTMLSelectElement;
+  const playbackRateSelect = document.getElementById('playback-rate-select') as HTMLSelectElement;
+  const playbackRateDown = document.getElementById('playback-rate-down') as HTMLButtonElement;
+  const playbackRateUp = document.getElementById('playback-rate-up') as HTMLButtonElement;
+  const seekBackwardBtn = document.getElementById('seek-backward-btn') as HTMLButtonElement;
+  const seekForwardBtn = document.getElementById('seek-forward-btn') as HTMLButtonElement;
   
   // Playlist specific DOM elements
   const playlistInfoDiv = document.getElementById('playlist-info') as HTMLDivElement;
@@ -45,19 +54,24 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentPlaylistName: string | null = null;
   let currentTrackIndex: number = -1;
   let isPlaylistMode: boolean = false;
+  const minPlaybackRate = 0.25;
+  const maxPlaybackRate = 3;
+  const playbackRateStep = 0.05;
+  let preferredPlaybackRate = 1;
 
-  // Interface for current track data
-  interface CurrentTrackData {
-    title: string;
-    audioUrl: string; // This will be the fresh, temporary URL
-    bvid: string;
-    cid: string; 
-    aid?: string; // Optional, as bvid is primary
-  } // CurrentTrackData is specific to player.ts, so it stays.
-  // It's often a subset or slightly different version of BilibiliVideoInfo for player's internal use.
+  type CurrentTrackData = BilibiliVideoInfo;
+
+  function isSameTrack(
+    first: Pick<CurrentTrackData, 'bvid' | 'cid'>,
+    second: Pick<PlaylistItem, 'bvid' | 'cid'>,
+  ): boolean {
+    return first.bvid === second.bvid && first.cid === second.cid;
+  }
   
   // Listen for messages from popup
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    if (sender.id !== chrome.runtime.id || !message || typeof message !== 'object') return;
+
     if (message.action === 'playPlaylist') {
       isPlaylistMode = true;
       const { playlist, startIndex } = message.data as { playlist: Playlist, startIndex: number };
@@ -80,22 +94,21 @@ document.addEventListener('DOMContentLoaded', () => {
   
   // Check if video data was passed via URL parameters (fallback)
   const urlParams = new URLSearchParams(window.location.search);
-  const audioUrlParam = urlParams.get('audioUrl');
-  const titleParam = urlParams.get('title');
   const bvidParam = urlParams.get('bvid');
-  const cidParam = urlParams.get('cid'); // Added cidParam
+  const cidParam = urlParams.get('cid');
   
-  if (audioUrlParam && titleParam && bvidParam && cidParam) { // Ensure bvid and cid are present
-    isPlaylistMode = false; // Ensure playlist mode is off
-    videoData = {
-      audioUrl: decodeURIComponent(audioUrlParam),
-      title: decodeURIComponent(titleParam),
-      bvid: bvidParam, // bvid is now required
-      cid: cidParam,   // cid is now required
-      // aid can be omitted if bvid is present or fetched if necessary
-    };
-    initializePlayer(videoData);
-    updatePlaylistUI(); // Hide playlist UI elements
+  if (bvidParam && cidParam) {
+    showPlayerMessage('正在加载选集信息...', 'info');
+    void requestBilibiliAudio(`https://www.bilibili.com/video/${bvidParam}`, cidParam)
+      .then(freshInfo => {
+        if (freshInfo) {
+          isPlaylistMode = false;
+          void initializePlayer(freshInfo);
+          updatePlaylistUI();
+        } else {
+          showPlayerMessage('无法加载所选分集', 'error');
+        }
+      });
   }
   
   // Function to start or continue playlist playback
@@ -105,26 +118,13 @@ document.addEventListener('DOMContentLoaded', () => {
       
       // Fetch fresh audio URL using bvid and cid from trackItem
       showPlayerMessage(`正在加载: ${trackItem.title}`, 'info');
-      const authConfig = await loadAuthConfig(); // Make sure loadAuthConfig is available or imported
-      const freshVideoInfo = await getBilibiliAudio(
-        `https://www.bilibili.com/video/${trackItem.bvid}`, // Construct URL from bvid
-        authConfig,
-        trackItem.cid // Pass cid directly if getBilibiliAudio can take it, or modify getBilibiliAudio
-                      // For now, assuming getBilibiliAudio uses the URL to find video info including cid.
-                      // If getBilibiliAudio needs cid explicitly, its signature/logic needs update.
-                      // Let's assume for now it re-fetches CID if not passed or if URL is primary.
+      const freshVideoInfo = await requestBilibiliAudio(
+        `https://www.bilibili.com/video/${trackItem.bvid}`,
+        trackItem.cid,
       );
 
       if (freshVideoInfo && freshVideoInfo.audioUrl) {
-        // Map PlaylistItem and fresh info to CurrentTrackData structure
-        const trackData: CurrentTrackData = { 
-          title: trackItem.title, 
-          audioUrl: freshVideoInfo.audioUrl, 
-          bvid: trackItem.bvid, 
-          cid: freshVideoInfo.cid, // Use fresh cid, should match trackItem.cid
-          aid: freshVideoInfo.aid
-        };
-        initializePlayer(trackData);
+        await initializePlayer(freshVideoInfo);
         updatePlaylistUI(); // Update track indicator
       } else {
         showPlayerMessage(`无法加载 "${trackItem.title}"。请检查网络或视频状态。`, 'error');
@@ -164,11 +164,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Set video info
     headerTitle.textContent = videoData.title;
     videoTitle.textContent = videoData.title;
-    videoId.textContent = `BV: ${videoData.bvid}`;
+    videoId.textContent = `BV: ${videoData.bvid}${videoData.pages.length > 1 ? ` · P${videoData.page}` : ''}`;
+    updateEpisodeSelector(videoData);
     
     // Set audio source
     audioPlayer.src = videoData.audioUrl;
     audioPlayer.volume = 0.7; // Default volume
+    audioPlayer.playbackRate = preferredPlaybackRate;
     
     // Update volume level display
     updateVolumeLevel(audioPlayer.volume);
@@ -195,9 +197,123 @@ document.addEventListener('DOMContentLoaded', () => {
       showPlayerMessage('自动播放失败，请点击播放按钮手动播放', 'error');
     });
     
-    // Initialize custom controls (including Add to Playlist button listener)
-    initializeCustomControls(videoData); // Pass videoData
   }
+
+  function updateEpisodeSelector(data: CurrentTrackData) {
+    episodeSelect.innerHTML = '';
+
+    if (data.pages.length <= 1) {
+      episodeControl.style.display = 'none';
+      updateNavigationControls();
+      return;
+    }
+
+    data.pages.forEach(page => {
+      const option = document.createElement('option');
+      option.value = page.cid;
+      option.textContent = `P${page.page} ${page.part}`;
+      option.selected = page.cid === data.cid;
+      episodeSelect.appendChild(option);
+    });
+    episodeControl.style.display = 'flex';
+    updateNavigationControls();
+  }
+
+  async function switchEpisode(selectedCid: string, automatic = false) {
+    if (!videoData || selectedCid === videoData.cid) return;
+
+    episodeSelect.disabled = true;
+    showPlayerMessage(automatic ? '正在自动播放下一集...' : '正在切换选集...', 'info');
+
+    try {
+      const freshInfo = await requestBilibiliAudio(
+        `https://www.bilibili.com/video/${videoData.bvid}`,
+        selectedCid,
+      );
+      if (!freshInfo) {
+        updateEpisodeSelector(videoData);
+        showPlayerMessage('切换选集失败，请稍后重试', 'error');
+        return;
+      }
+
+      isPlaylistMode = false;
+      currentPlaylist = null;
+      currentPlaylistName = null;
+      currentTrackIndex = -1;
+      updatePlaylistUI();
+      await initializePlayer(freshInfo);
+    } catch (error) {
+      console.error('Error switching video part:', error);
+      if (videoData) updateEpisodeSelector(videoData);
+      showPlayerMessage('切换选集失败，请稍后重试', 'error');
+    } finally {
+      episodeSelect.disabled = false;
+    }
+  }
+
+  episodeSelect.addEventListener('change', () => {
+    void switchEpisode(episodeSelect.value);
+  });
+
+  function normalizePlaybackRate(rate: number): number {
+    const clamped = Math.max(minPlaybackRate, Math.min(maxPlaybackRate, rate));
+    return Math.round(clamped * 100) / 100;
+  }
+
+  function updatePlaybackRateControls() {
+    playbackRateSelect.querySelector('option[data-custom="true"]')?.remove();
+
+    const matchingOption = Array.from(playbackRateSelect.options).find(option =>
+      Number(option.value) === preferredPlaybackRate
+    );
+    if (!matchingOption) {
+      const customOption = document.createElement('option');
+      customOption.value = String(preferredPlaybackRate);
+      customOption.textContent = `${preferredPlaybackRate.toFixed(2)}×`;
+      customOption.dataset.custom = 'true';
+      playbackRateSelect.appendChild(customOption);
+    }
+
+    playbackRateSelect.value = String(preferredPlaybackRate);
+    playbackRateDown.disabled = preferredPlaybackRate <= minPlaybackRate;
+    playbackRateUp.disabled = preferredPlaybackRate >= maxPlaybackRate;
+  }
+
+  function applyPlaybackRate(rate: number, persist = true) {
+    if (!Number.isFinite(rate)) return;
+
+    preferredPlaybackRate = normalizePlaybackRate(rate);
+    audioPlayer.playbackRate = preferredPlaybackRate;
+    updatePlaybackRateControls();
+    if (persist) void chrome.storage.local.set({ playbackRate: preferredPlaybackRate });
+  }
+
+  async function loadPlaybackRate() {
+    try {
+      const result = await chrome.storage.local.get<{ playbackRate?: unknown }>('playbackRate');
+      const storedRate = result.playbackRate;
+      if (typeof storedRate === 'number' && Number.isFinite(storedRate) &&
+          storedRate >= minPlaybackRate && storedRate <= maxPlaybackRate) {
+        preferredPlaybackRate = normalizePlaybackRate(storedRate);
+      }
+    } catch (error) {
+      console.error('Error loading playback rate:', error);
+    }
+
+    applyPlaybackRate(preferredPlaybackRate, false);
+  }
+
+  playbackRateSelect.addEventListener('change', () => {
+    applyPlaybackRate(Number(playbackRateSelect.value));
+  });
+
+  playbackRateDown.addEventListener('click', () => {
+    applyPlaybackRate(preferredPlaybackRate - playbackRateStep);
+  });
+
+  playbackRateUp.addEventListener('click', () => {
+    applyPlaybackRate(preferredPlaybackRate + playbackRateStep);
+  });
 
   // Update playback history in chrome.storage.local
   async function updatePlaybackHistory(videoData: CurrentTrackData) { // Changed type to CurrentTrackData
@@ -205,27 +321,23 @@ document.addEventListener('DOMContentLoaded', () => {
       title: videoData.title,
       bvid: videoData.bvid, // Now directly from CurrentTrackData, which should be valid
       cid: videoData.cid,   // Now directly from CurrentTrackData
-      audioUrl: videoData.audioUrl, // Store the temporary fresh audio URL
       timestamp: new Date().toISOString(),
     };
 
     try {
-      const result = await chrome.storage.local.get('playbackHistory');
-      let history: HistoryItem[] = result.playbackHistory || [];
+      let history = await getPlaybackHistory();
 
-      // Check for duplicates and remove if existing and not the most recent
-      const existingItemIndex = history.findIndex(item => 
-        (newHistoryItem.bvid && item.bvid === newHistoryItem.bvid) || 
-        (!newHistoryItem.bvid && item.audioUrl === newHistoryItem.audioUrl)
+      // Remove legacy temporary CDN URLs while normalizing history records.
+      history = history.map(item => {
+        const { audioUrl: _legacyAudioUrl, ...safeItem } = item;
+        return safeItem;
+      });
+
+      const existingItemIndex = history.findIndex(item =>
+        item.bvid === newHistoryItem.bvid && item.cid === newHistoryItem.cid
       );
 
       if (existingItemIndex !== -1) {
-        // If it's already the most recent item, do nothing
-        if (existingItemIndex === 0) {
-          console.log('Video is already the most recent in history.');
-          return;
-        }
-        // Remove the existing item
         history.splice(existingItemIndex, 1);
       }
 
@@ -243,9 +355,46 @@ document.addEventListener('DOMContentLoaded', () => {
       console.error('Error updating playback history:', error);
     }
   }
+
+  function togglePlayback() {
+    if (!audioPlayer.currentSrc) return;
+
+    if (audioPlayer.paused) {
+      void audioPlayer.play().catch(error => {
+        console.error('Manual play failed:', error);
+        showPlayerMessage('播放失败，请稍后重试', 'error');
+      });
+    } else {
+      audioPlayer.pause();
+    }
+  }
+
+  function seekBy(seconds: number) {
+    if (!Number.isFinite(audioPlayer.duration) || audioPlayer.duration <= 0) return;
+    const currentTime = Number.isFinite(audioPlayer.currentTime) ? audioPlayer.currentTime : 0;
+    audioPlayer.currentTime = Math.max(0, Math.min(audioPlayer.duration, currentTime + seconds));
+  }
+
+  async function navigateRelative(offset: -1 | 1) {
+    if (isPlaylistMode && currentPlaylist) {
+      const nextIndex = currentTrackIndex + offset;
+      if (nextIndex < 0 || nextIndex >= currentPlaylist.length) return;
+      currentTrackIndex = nextIndex;
+      updateNavigationControls();
+      await startOrContinuePlaylistPlayback();
+      return;
+    }
+
+    if (!videoData || videoData.pages.length <= 1) return;
+    const currentPageIndex = videoData.pages.findIndex(page => page.cid === videoData?.cid);
+    const targetPage = videoData.pages[currentPageIndex + offset];
+    if (currentPageIndex >= 0 && targetPage) {
+      await switchEpisode(targetPage.cid);
+    }
+  }
   
   // Initialize custom player controls
-  function initializeCustomControls(currentVideoData: any) { // Receive videoData
+  function initializeCustomControls() {
     // Audio ended listener (for playlist progression)
     audioPlayer.addEventListener('ended', () => {
       if (isPlaylistMode && currentPlaylist) {
@@ -258,32 +407,47 @@ document.addEventListener('DOMContentLoaded', () => {
           showPlayerMessage('播放列表已结束。', 'info');
           updatePlaylistUI(); // Hide playlist controls and info
         }
+      } else if (videoData && videoData.pages.length > 1) {
+        const currentPageIndex = videoData.pages.findIndex(page => page.cid === videoData?.cid);
+        const nextPage = videoData.pages[currentPageIndex + 1];
+        if (currentPageIndex >= 0 && nextPage) {
+          void switchEpisode(nextPage.cid, true);
+        } else {
+          showPlayerMessage('已播放完最后一集。', 'info');
+        }
       }
     });
 
-    // Next Track button listener
+    // Next episode/playlist item button listener
     nextTrackBtn.addEventListener('click', () => {
-      if (isPlaylistMode && currentPlaylist && currentTrackIndex < currentPlaylist.length - 1) {
-        currentTrackIndex++;
-        startOrContinuePlaylistPlayback();
-      }
+      void navigateRelative(1);
     });
 
-    // Previous Track button listener
+    // Previous episode/playlist item button listener
     prevTrackBtn.addEventListener('click', () => {
-      if (isPlaylistMode && currentPlaylist && currentTrackIndex > 0) {
-        currentTrackIndex--;
-        startOrContinuePlaylistPlayback();
-      }
+      void navigateRelative(-1);
     });
+
+    seekBackwardBtn.addEventListener('click', () => seekBy(-10));
+    seekForwardBtn.addEventListener('click', () => seekBy(10));
     
     // Play/Pause button
     playPauseBtn.addEventListener('click', () => {
-      if (audioPlayer.paused) {
-        audioPlayer.play();
-      } else {
-        audioPlayer.pause();
+      togglePlayback();
+    });
+
+    document.addEventListener('keydown', event => {
+      if (event.code !== 'Space' || event.repeat) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable ||
+          target instanceof HTMLInputElement ||
+          target instanceof HTMLTextAreaElement ||
+          target instanceof HTMLSelectElement)) {
+        return;
       }
+
+      event.preventDefault();
+      togglePlayback();
     });
     
     // Update play/pause icon based on player state
@@ -294,10 +458,16 @@ document.addEventListener('DOMContentLoaded', () => {
     audioPlayer.addEventListener('pause', () => {
       playIcon.className = 'icon-play';
     });
+
+    audioPlayer.addEventListener('loadedmetadata', () => {
+      audioPlayer.playbackRate = preferredPlaybackRate;
+    });
     
     // Progress bar
     audioPlayer.addEventListener('timeupdate', () => {
-      const progress = (audioPlayer.currentTime / audioPlayer.duration) * 100;
+      const progress = Number.isFinite(audioPlayer.duration) && audioPlayer.duration > 0
+        ? (audioPlayer.currentTime / audioPlayer.duration) * 100
+        : 0;
       progressBar.style.width = `${progress}%`;
       
       // Update time display
@@ -308,6 +478,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Click on progress bar to seek
     progressContainer.addEventListener('click', (e) => {
+      if (!Number.isFinite(audioPlayer.duration) || audioPlayer.duration <= 0) return;
       const rect = progressContainer.getBoundingClientRect();
       const pos = (e.clientX - rect.left) / rect.width;
       audioPlayer.currentTime = pos * audioPlayer.duration;
@@ -348,6 +519,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Add to Playlist button event listener (5)
     addToPlaylistBtn.addEventListener('click', async () => {
+      const currentVideoData = videoData;
       if (!currentVideoData || !currentVideoData.audioUrl) {
         showPlayerMessage('当前无视频信息可添加或移除。', 'error');
         return;
@@ -361,16 +533,12 @@ document.addEventListener('DOMContentLoaded', () => {
           "确定要从所有播放合集中移除此歌曲吗？此操作会将其从所有包含它的合集中移除。",
           async () => { // onConfirm
             try {
-              const playlistsData = await chrome.storage.local.get('userPlaylists');
-              let playlists: Playlist[] = playlistsData.userPlaylists || [];
+              const playlists = await getUserPlaylists();
               let modified = false;
 
               playlists.forEach(playlist => {
                 const initialLength = playlist.items.length;
-                playlist.items = playlist.items.filter(item =>
-                  !((currentVideoData.bvid && item.bvid === currentVideoData.bvid) ||
-                    (!currentVideoData.bvid && item.audioUrl === currentVideoData.audioUrl))
-                );
+                playlist.items = playlist.items.filter(item => !isSameTrack(currentVideoData, item));
                 if (playlist.items.length < initialLength) {
                   playlist.updatedAt = new Date().toISOString();
                   modified = true;
@@ -393,8 +561,7 @@ document.addEventListener('DOMContentLoaded', () => {
       } else {
         // --- Favorite Logic: Add to a selected playlist ---
         try {
-          const playlistsData = await chrome.storage.local.get('userPlaylists');
-          const playlists: Playlist[] = playlistsData.userPlaylists || [];
+          const playlists = await getUserPlaylists();
 
           if (playlists.length === 0) {
             showPlayerMessage('请先在设置页面创建播放合集。', 'error');
@@ -414,8 +581,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!selectedPlaylist) return; // User cancelled or no selection
 
             const isDuplicate = selectedPlaylist.items.some((item: PlaylistItem) =>
-              (currentVideoData.bvid && item.bvid === currentVideoData.bvid) ||
-              (!currentVideoData.bvid && item.audioUrl === currentVideoData.audioUrl)
+              isSameTrack(currentVideoData, item)
             );
 
             if (isDuplicate) {
@@ -429,7 +595,6 @@ document.addEventListener('DOMContentLoaded', () => {
               title: currentVideoData.title,
               bvid: currentVideoData.bvid, // currentVideoData is videoData (CurrentTrackData)
               cid: currentVideoData.cid,   // Add cid
-              audioUrl: currentVideoData.audioUrl, // Store temporary fresh URL
               addedAt: new Date().toISOString(),
             };
 
@@ -497,18 +662,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  async function checkIfVideoIsFavorited(currentVideoData: any): Promise<boolean> {
-    if (!currentVideoData || (!currentVideoData.bvid && !currentVideoData.audioUrl)) {
+  async function checkIfVideoIsFavorited(currentVideoData: CurrentTrackData | null): Promise<boolean> {
+    if (!currentVideoData) {
       return false;
     }
     try {
-      const playlistsData = await chrome.storage.local.get('userPlaylists');
-      const playlists: Playlist[] = playlistsData.userPlaylists || [];
+      const playlists = await getUserPlaylists();
 
       for (const playlist of playlists) {
-        const isPresent = playlist.items.some((item: PlaylistItem) => 
-          (currentVideoData.bvid && item.bvid === currentVideoData.bvid) ||
-          (!currentVideoData.bvid && item.audioUrl === currentVideoData.audioUrl)
+        const isPresent = playlist.items.some((item: PlaylistItem) =>
+          isSameTrack(currentVideoData, item)
         );
         if (isPresent) {
           return true; // Found in at least one playlist
@@ -522,18 +685,35 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- End Favorite Icon Logic ---
 
   // Function to update playlist UI elements
+  function updateNavigationControls() {
+    if (isPlaylistMode && currentPlaylist) {
+      prevTrackBtn.textContent = '上一首';
+      nextTrackBtn.textContent = '下一首';
+      prevTrackBtn.title = '播放列表上一首';
+      nextTrackBtn.title = '播放列表下一首';
+      prevTrackBtn.disabled = currentTrackIndex <= 0;
+      nextTrackBtn.disabled = currentTrackIndex < 0 || currentTrackIndex >= currentPlaylist.length - 1;
+      return;
+    }
+
+    prevTrackBtn.textContent = '上一集';
+    nextTrackBtn.textContent = '下一集';
+    prevTrackBtn.title = '上一集';
+    nextTrackBtn.title = '下一集';
+    const currentPageIndex = videoData?.pages.findIndex(page => page.cid === videoData?.cid) ?? -1;
+    prevTrackBtn.disabled = currentPageIndex <= 0;
+    nextTrackBtn.disabled = !videoData || currentPageIndex < 0 || currentPageIndex >= videoData.pages.length - 1;
+  }
+
   function updatePlaylistUI() {
     if (isPlaylistMode && currentPlaylistName && currentPlaylist) {
       playlistInfoDiv.style.display = 'block';
       playlistNameEl.textContent = `播放列表: ${currentPlaylistName}`;
       playlistTrackIndicatorEl.textContent = `曲目 ${currentTrackIndex + 1} / ${currentPlaylist.length}`;
-      prevTrackBtn.style.display = 'inline-block';
-      nextTrackBtn.style.display = 'inline-block';
     } else {
       playlistInfoDiv.style.display = 'none';
-      prevTrackBtn.style.display = 'none';
-      nextTrackBtn.style.display = 'none';
     }
+    updateNavigationControls();
   }
 
   // --- Custom Modal Functions ---
@@ -650,42 +830,8 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   // --- End Custom Modal Functions ---
 
-  // Need to import getBilibiliAudio and loadAuthConfig from bilibiliApi.ts
-  // This will require changes if player.ts is compiled in a way that it can't directly import
-  // For extensions, often helper functions are sendMessage'd from background or content scripts
-  // or direct imports work if using a bundler like webpack that handles modules.
-  // Assuming direct imports work due to webpack.config.js presence:
+  initializeCustomControls();
+  updateNavigationControls();
+  void loadPlaybackRate();
 
-  async function loadAuthConfig(): Promise<AuthConfig> { // Definition from bilibiliApi.ts (simplified for player context if direct import fails)
-    return new Promise((resolve) => {
-      chrome.storage.sync.get('authConfig', (result) => {
-        resolve((result.authConfig as AuthConfig) || { SESSDATA: '' });
-      });
-    });
-  }
-  // interface AuthConfig { SESSDATA: string; } // REMOVED
-
-  // Placeholder for getBilibiliAudio if direct import from bilibiliApi.ts is problematic
-  // Ideally, this would be a direct import: import { getBilibiliAudio } from './utils/bilibiliApi';
-  // For now, defining a compatible signature. Actual call might need to go via background script.
-  async function getBilibiliAudio(url: string, authConfig?: AuthConfig, cidToMatch?: string): Promise<BilibiliVideoInfo | null> { // Use imported AuthConfig and BilibiliVideoInfo
-      // The call is now intentionally routed through the background script, so this warning is no longer needed.
-      // console.warn("getBilibiliAudio called from player.ts - ensure this is intended and works with your build setup. Consider using background script for API calls.");
-      
-      // Basic implementation detail assuming it might be moved to background later:
-      return new Promise((resolve) => {
-          chrome.runtime.sendMessage(
-              { action: "getBilibiliAudio", url: url, authConfig: authConfig, cid: cidToMatch }, 
-              (response) => {
-                  if (chrome.runtime.lastError) {
-                      console.error("Error calling getBilibiliAudio via background:", chrome.runtime.lastError.message);
-                      resolve(null);
-                  } else {
-                      resolve(response as BilibiliVideoInfo | null);
-                  }
-              }
-          );
-      });
-  }
-  // interface BilibiliVideoInfo { ... } // REMOVED
 });

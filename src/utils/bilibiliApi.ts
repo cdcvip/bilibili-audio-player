@@ -3,6 +3,7 @@
  */
 import {
   BilibiliVideoInfo,
+  BilibiliPageInfo,
   AuthConfig,
   SignData,
   ViewApiResponseData, // Imported from types.ts
@@ -12,6 +13,29 @@ import {
 import { encWbi, extractVideoId } from './util'; // extractVideoId imported from util.ts
 
 const BILIBILI_API_BASE_URL = 'https://api.bilibili.com';
+
+interface SpiData {
+  b3: string;
+  b4: string;
+}
+
+interface SignDataCache {
+  signData?: unknown;
+  cacheTime?: unknown;
+  spiData?: unknown;
+}
+
+function isSignData(value: unknown): value is SignData {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<SignData>;
+  return typeof candidate.imgKey === 'string' && typeof candidate.subKey === 'string';
+}
+
+function isSpiData(value: unknown): value is SpiData {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<SpiData>;
+  return typeof candidate.b3 === 'string' && typeof candidate.b4 === 'string';
+}
 
 // Interfaces like ViewApiResponseData, DashAudioStream, etc., have been moved to types.ts
 // Utility functions like extractVideoId, isBilibiliVideoPage, etc., have been moved to util.ts
@@ -36,13 +60,12 @@ async function makeSignedBiliApiRequest<T>(
 
   if (authConfig?.cookieString) {
     headers.Cookie = authConfig.cookieString;
-  } else if (authConfig?.SESSDATA) {
-    headers.Cookie = `SESSDATA=${authConfig.SESSDATA}`;
   }
 
   const response = await fetch(`${BILIBILI_API_BASE_URL}${endpoint}?${signedParamsUrlString}`, {
     method: 'GET',
     headers,
+    redirect: 'error',
   });
 
   if (!response.ok) {
@@ -80,7 +103,8 @@ async function getSignData() {
   };
   const response = await fetch(`${BILIBILI_API_BASE_URL}/x/web-interface/nav`, { 
     method: 'GET',  
-    headers
+    headers,
+    redirect: 'error',
   });  
   
   if (response.ok) {  
@@ -98,7 +122,8 @@ async function getSpiData() {
   };
   const response = await fetch(`${BILIBILI_API_BASE_URL}/x/frontend/finger/spi`, { 
     method: 'GET',  
-    headers
+    headers,
+    redirect: 'error',
   });  
   
   if (!response.ok) {  
@@ -113,7 +138,7 @@ async function getSpiData() {
 }
 
 export async function initSignData() {  
-  const cachedData = await chrome.storage.local.get([  
+  const cachedData = await chrome.storage.local.get<SignDataCache>([
     'signData',   
     'cacheTime',  
     'spiData'  
@@ -122,9 +147,9 @@ export async function initSignData() {
   const now = Date.now();  
   const oneDayInMs = 24 * 60 * 60 * 1000;  
     
-  if (cachedData.signData &&   
-      cachedData.cacheTime &&   
-      cachedData.spiData &&  
+  if (isSignData(cachedData.signData) &&
+      typeof cachedData.cacheTime === 'number' &&
+      isSpiData(cachedData.spiData) &&
       (now - cachedData.cacheTime) < oneDayInMs) {  
     console.log('使用缓存的签名数据');  
     return {  
@@ -169,7 +194,7 @@ export async function sign(params: Record<string, string>) {
 export const fetchVideoInfo = async (
   videoId: { aid?: string; bvid?: string },
   authConfig?: AuthConfig
-): Promise<{ title: string; cid: string; bvid: string; aid: string } | null> => {
+): Promise<{ title: string; cid: string; bvid: string; aid: string; pages: BilibiliPageInfo[] } | null> => {
   try {
     const params: Record<string, string> = {};
     if (videoId.bvid) {
@@ -187,11 +212,26 @@ export const fetchVideoInfo = async (
       authConfig
     );
 
+    const pages = Array.isArray(data.pages) && data.pages.length > 0
+      ? data.pages.map((page, index) => ({
+          cid: String(page.cid),
+          page: Number.isInteger(page.page) && page.page > 0 ? page.page : index + 1,
+          part: String(page.part || `P${index + 1}`),
+          duration: Number.isFinite(page.duration) ? page.duration : 0,
+        }))
+      : [{
+          cid: String(data.cid),
+          page: 1,
+          part: String(data.title),
+          duration: 0,
+        }];
+
     return {
-      title: data.title,
-      cid: data.cid,
-      bvid: data.bvid,
-      aid: data.aid,
+      title: String(data.title),
+      cid: pages[0].cid,
+      bvid: String(data.bvid),
+      aid: String(data.aid),
+      pages,
     };
   } catch (error) {
     console.error('Error fetching video info:', error);
@@ -244,7 +284,8 @@ export const extractAudioUrl = async (
 
 export const getBilibiliAudio = async (
   url: string,
-  authConfig?: AuthConfig
+  authConfig?: AuthConfig,
+  requestedCid?: string,
 ): Promise<BilibiliVideoInfo | null> => {
   try {
     const videoId = extractVideoId(url); // Now imported from util.ts
@@ -257,17 +298,41 @@ export const getBilibiliAudio = async (
       throw new Error('Failed to fetch video info');
     }
 
-    const audioUrl = await extractAudioUrl(videoInfo, authConfig);
+    let requestedPage: number | undefined;
+    try {
+      const parsedUrl = new URL(url);
+      const pageParam = Number(parsedUrl.searchParams.get('p'));
+      if (Number.isInteger(pageParam) && pageParam > 0) requestedPage = pageParam;
+    } catch {
+      // Bare BV/AV identifiers intentionally have no URL parameters.
+    }
+
+    const selectedPage = requestedCid
+      ? videoInfo.pages.find(page => page.cid === requestedCid)
+      : requestedPage
+        ? videoInfo.pages.find(page => page.page === requestedPage)
+        : videoInfo.pages[0];
+
+    if (!selectedPage) {
+      throw new Error('Requested video part does not exist');
+    }
+
+    const selectedVideoInfo = { ...videoInfo, cid: selectedPage.cid };
+    const audioUrl = await extractAudioUrl(selectedVideoInfo, authConfig);
     if (!audioUrl) {
       throw new Error('Failed to extract audio URL');
     }
 
     return {
-      title: videoInfo.title,
+      title: videoInfo.pages.length > 1
+        ? `${videoInfo.title} · P${selectedPage.page} ${selectedPage.part}`
+        : videoInfo.title,
       aid: videoInfo.aid,
       bvid: videoInfo.bvid,
-      cid: videoInfo.cid,
+      cid: selectedPage.cid,
       audioUrl,
+      page: selectedPage.page,
+      pages: videoInfo.pages,
     };
   } catch (error) {
     console.error('Error in getBilibiliAudio:', error);
@@ -275,5 +340,4 @@ export const getBilibiliAudio = async (
   }
 };
 
-// extractVideoId, isBilibiliVideoPage, saveAuthConfig, loadAuthConfig functions
-// have been moved to src/utils/util.ts
+// URL parsing helpers live in src/utils/util.ts.

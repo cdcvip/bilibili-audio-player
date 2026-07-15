@@ -1,6 +1,6 @@
 // Content script for Bilibili pages
-import { getBilibiliAudio } from './utils/bilibiliApi';
-import { isBilibiliVideoPage, loadAuthConfig } from './utils/util';
+import { isBilibiliVideoPage } from './utils/util';
+import { requestBilibiliAudio } from './utils/runtimeApi';
 
 // Check if current page is a Bilibili video page
 if (isBilibiliVideoPage(window.location.href)) {
@@ -37,11 +37,8 @@ if (isBilibiliVideoPage(window.location.href)) {
       // Get current video URL
       const url = window.location.href;
       
-      // Load auth config
-      const authConfig = await loadAuthConfig();
-      
-      // Extract audio URL
-      const videoInfo = await getBilibiliAudio(url, authConfig);
+      // Cookie access and API requests remain isolated in the background worker.
+      const videoInfo = await requestBilibiliAudio(url);
       
       if (videoInfo) {
         // Send message to background script to open player

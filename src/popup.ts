@@ -1,20 +1,10 @@
 /// <reference types="chrome" />
 // Popup page script
-import {
-  getBilibiliAudio,
-} from "./utils/bilibiliApi";
-import { isBilibiliVideoPage, loadAuthConfig } from "./utils/util"; // Updated import path
+import { isBilibiliVideoPage } from "./utils/util";
+import { requestBilibiliAudio } from "./utils/runtimeApi";
+import { getPlaybackHistory, getUserPlaylists } from './utils/storage';
 import { Playlist } from "./utils/playlistTypes"; // Import Playlist type
-import { HistoryItem, BilibiliVideoInfo, AuthConfig } from "./utils/types"; // Import shared types
-
-function getBrowserCookieString(): Promise<string> {
-  return new Promise(resolve => {
-    chrome.cookies.getAll({ domain: 'bilibili.com' }, cookies => {
-      if (chrome.runtime.lastError || !cookies) { resolve(''); return; }
-      resolve(cookies.map(c => `${c.name}=${c.value}`).join('; '));
-    });
-  });
-}
+import { HistoryItem, BilibiliVideoInfo } from "./utils/types"; // Import shared types
 
 document.addEventListener("DOMContentLoaded", async () => {
   const videoUrlInput = document.getElementById(
@@ -111,12 +101,8 @@ document.addEventListener("DOMContentLoaded", async () => {
       extractBtn.innerHTML = '<span class="loading"></span>提取中...';
       showStatus("正在提取音频信息...", "info");
 
-      // Load auth config + full browser cookies for anti-bot compliance
-      const authConfig = await loadAuthConfig();
-      const cookieString = await getBrowserCookieString();
-
-      // Get audio info
-      const videoInfo = await getBilibiliAudio(url, { ...authConfig, cookieString });
+      // Cookie access and API requests are isolated in the background worker.
+      const videoInfo = await requestBilibiliAudio(url);
 
       if (!videoInfo) {
         throw new Error("无法提取音频信息，请检查链接或登录状态");
@@ -157,7 +143,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["popup", "normal"] });
       for (const win of windows) {
         if (win.tabs) {
-          const playerTab = win.tabs.find(tab => tab.url === playerUrl);
+          const playerTab = win.tabs.find(tab =>
+            tab.url === playerUrl || tab.url?.startsWith(`${playerUrl}?`)
+          );
           if (playerTab && win.id) {
             existingPlayerWindow = win;
             playerTabId = playerTab.id;
@@ -247,25 +235,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // --- Helper to fetch fresh video info via Background --- 
   async function fetchFreshVideoInfoFromBackground(bvid: string, cid?: string): Promise<BilibiliVideoInfo | null> {
-    return new Promise((resolve) => {
-      // Construct a URL. If cid is crucial for disambiguation, the API call might need adjustment.
-      // For now, getBilibiliAudio in background takes a URL and can re-derive cid.
-      const videoUrl = `https://www.bilibili.com/video/${bvid}`;
-      // Auth config should be loaded here to pass to background, or background loads it.
-      loadAuthConfig().then((authConfig: AuthConfig) => { // Explicitly type authConfig
-        chrome.runtime.sendMessage(
-          { action: "getBilibiliAudio", url: videoUrl, authConfig: authConfig }, // `cid` could be passed if needed by background
-          (response) => {
-            if (chrome.runtime.lastError) {
-              console.error("Error fetching fresh video info from background:", chrome.runtime.lastError.message);
-              resolve(null);
-            } else {
-              resolve(response as BilibiliVideoInfo | null);
-            }
-          }
-        );
-      });
-    });
+    return requestBilibiliAudio(`https://www.bilibili.com/video/${bvid}`, cid);
   }
 
   // --- Playback History Functions ---
@@ -277,8 +247,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     historyList.innerHTML = ""; // Clear previous items
 
     try {
-      const result = await chrome.storage.local.get("playbackHistory");
-      const history: HistoryItem[] = result.playbackHistory || [];
+      const history = await getPlaybackHistory();
 
       if (history.length === 0) {
         const noHistoryLi = document.createElement("li");
@@ -295,7 +264,6 @@ document.addEventListener("DOMContentLoaded", async () => {
       itemsToDisplay.forEach((item) => {
         const li = document.createElement("li");
         li.className = "history-item";
-        li.dataset.audioUrl = encodeURIComponent(item.audioUrl || '');
         li.dataset.title = item.title;
         if (item.bvid) {
           li.dataset.bvid = item.bvid;
@@ -347,8 +315,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     collectionList.innerHTML = ""; // Clear previous items
 
     try {
-      const { userPlaylists } = await chrome.storage.local.get("userPlaylists");
-      const playlists: Playlist[] = userPlaylists || [];
+      const playlists = await getUserPlaylists();
 
       if (playlists.length === 0) {
         const noCollectionsLi = document.createElement("li");
@@ -384,8 +351,7 @@ document.addEventListener("DOMContentLoaded", async () => {
           }
 
           try {
-            const result = await chrome.storage.local.get("userPlaylists");
-            const playlists: Playlist[] = result.userPlaylists || [];
+            const playlists = await getUserPlaylists();
             const selectedPlaylist = playlists.find((p) => p.id === playlistId);
 
             if (selectedPlaylist) {
@@ -446,7 +412,9 @@ document.addEventListener("DOMContentLoaded", async () => {
       const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["popup", "normal"] });
       for (const win of windows) {
         if (win.tabs) {
-          const playerTab = win.tabs.find(tab => tab.url === playerUrl);
+          const playerTab = win.tabs.find(tab =>
+            tab.url === playerUrl || tab.url?.startsWith(`${playerUrl}?`)
+          );
           if (playerTab && win.id) {
             existingPlayerWindow = win;
             playerTabId = playerTab.id;

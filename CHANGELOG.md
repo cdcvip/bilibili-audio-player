@@ -2,7 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased] - 2024-07-30
+## [1.1.0] - 2026-07-15
+
+### Added
+- Multi-part video selection with exact `?p=`/CID playback, previous/next part controls, and automatic continuation.
+- Persistent 0.25×–3× playback speed with common presets and ±0.05× fine adjustment.
+- Previous/next track controls for playlists, ±10-second seeking, and Spacebar play/pause.
+
+### Changed
+- Replaced duplicate native audio controls with a single custom timeline and transport control layout.
+- Restricted Bilibili cookie access to an explicit background-only allowlist and removed manual/synced `SESSDATA` storage.
+- Hardened runtime message validation, extension storage access, CSP, permissions, and CDN header rules.
+- Updated and reduced the dependency tree, switched the lock file to the official npm registry, and pinned CI actions by commit SHA.
+
+### Fixed
+- Playback history and playlists now distinguish video parts by BVID and CID.
+- Existing player windows are reused even when their URL contains selected-part parameters.
+- Removed known npm dependency vulnerabilities reported by the official audit database.
+
+## [1.0.0] - 2024-07-30
 
 ### Added
 - **Playlist Management**: Users can now manually add Bilibili video URLs to a specific playlist directly from the settings page. This involves URL validation and fetching video metadata before adding.
@@ -22,4 +40,4 @@ All notable changes to this project will be documented in this file.
 - **Linter Errors**: Addressed various linter errors that arose during refactoring, including duplicate imports and incorrect type usages.
 
 ---
-*Older changes before this log was started are not detailed here.* 
+*Older changes before this log was started are not detailed here.*

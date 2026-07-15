@@ -56,9 +56,79 @@
       font-size: 12px;
       color: #666;
     }
+    .player-option-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 13px;
+      color: #555;
+    }
+    .player-option-row select {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #fff;
+      color: #333;
+    }
+    .playback-options {
+      justify-content: flex-end;
+      margin: -10px 0 12px;
+    }
+    .playback-options select {
+      flex: 0 0 auto;
+      width: 96px;
+    }
+    .speed-step {
+      width: 30px;
+      height: 30px;
+      padding: 0;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 28px;
+    }
+    .speed-step:hover:not(:disabled) {
+      border-color: #fb7299;
+      color: #fb7299;
+    }
+    .speed-step:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
     .audio-player {
-      width: 100%;
-      margin-bottom: 20px;
+      display: none;
+    }
+    .transport-controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .transport-btn {
+      min-width: 58px;
+      height: 34px;
+      padding: 0 8px;
+      border: 1px solid #ddd;
+      border-radius: 17px;
+      background: #fff;
+      color: #555;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .transport-btn:hover:not(:disabled) {
+      border-color: #fb7299;
+      color: #fb7299;
+    }
+    .transport-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
     }
     .custom-controls {
       display: flex;
@@ -73,7 +143,7 @@
       height: 40px;
       border-radius: 50%;
       cursor: pointer;
-      margin-right: 15px;
+      margin: 0;
       display: flex;
       justify-content: center;
       align-items: center;
@@ -330,21 +400,43 @@
       </div>
       <div class="video-title" id="video-title">加载中...</div>
       <div class="video-id" id="video-id"></div>
+      <div class="player-option-row" id="episode-control" style="display: none;">
+        <label for="episode-select">选集</label>
+        <select id="episode-select" aria-label="选择分集"></select>
+      </div>
     </div>
     
-    <audio id="audio-player" class="audio-player" controls></audio>
+    <audio id="audio-player" class="audio-player" preload="metadata"></audio>
+
+    <div class="player-option-row playback-options">
+      <label for="playback-rate-select">播放速度</label>
+      <button class="speed-step" id="playback-rate-down" type="button" aria-label="降低播放速度" title="降低 0.05×">−</button>
+      <select id="playback-rate-select" aria-label="播放速度">
+        <option value="0.25">0.25×</option>
+        <option value="0.5">0.5×</option>
+        <option value="0.75">0.75×</option>
+        <option value="1" selected>1.0×</option>
+        <option value="1.25">1.25×</option>
+        <option value="1.5">1.5×</option>
+        <option value="1.75">1.75×</option>
+        <option value="2">2.0×</option>
+        <option value="2.5">2.5×</option>
+        <option value="3">3.0×</option>
+      </select>
+      <button class="speed-step" id="playback-rate-up" type="button" aria-label="提高播放速度" title="提高 0.05×">＋</button>
+    </div>
     
-    <div class="custom-controls">
-      <button class="play-pause" id="play-pause-btn">
+    <div class="transport-controls">
+      <button id="prev-track-btn" class="transport-btn" type="button">上一集</button>
+      <button id="seek-backward-btn" class="transport-btn" type="button" title="后退 10 秒">−10秒</button>
+      <button class="play-pause" id="play-pause-btn" type="button" title="播放/暂停（空格）">
         <i class="icon-play" id="play-icon"></i>
       </button>
-      <button id="prev-track-btn" class="icon-btn" title="上一首" style="display: none;">
-        <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M7 6 L7 18 L5 18 L5 6 L7 6 Z M17 6 L17 18 L15 12 L17 6 Z"/></svg>
-      </button>
-      <button id="next-track-btn" class="icon-btn" title="下一首" style="display: none;">
-        <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M17 6 L17 18 L19 18 L19 6 L17 6 Z M7 6 L7 18 L9 12 L7 6 Z"/></svg>
-      </button>
-      
+      <button id="seek-forward-btn" class="transport-btn" type="button" title="前进 10 秒">+10秒</button>
+      <button id="next-track-btn" class="transport-btn" type="button">下一集</button>
+    </div>
+
+    <div class="custom-controls">
       <div class="progress-container" id="progress-container">
         <div class="progress-bar" id="progress-bar"></div>
       </div>

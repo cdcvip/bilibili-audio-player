@@ -1,16 +1,15 @@
 // Settings page script
 import { Playlist, PlaylistItem } from "./utils/playlistTypes"; // 1. Import Playlist Types
-import { getBilibiliAudio as fetchBilibiliAudioUtil } from "./utils/bilibiliApi"; // For direct call if needed, or for type info, added extractVideoId
-import { loadAuthConfig, extractVideoId } from "./utils/util"; // Updated import path
-import { HistoryItem, BilibiliVideoInfo, AuthConfig } from "./utils/types"; // Import shared types, Added AuthConfig
+import { extractVideoId } from "./utils/util";
+import { requestBilibiliAudio } from "./utils/runtimeApi";
+import { getPlaybackHistory, getUserPlaylists } from './utils/storage';
+import { HistoryItem, BilibiliVideoInfo } from "./utils/types";
 
 // Define BilibiliVideoInfo interface (mirroring from other files, ideally shared)
 
 // Define AuthConfig interface (mirroring from other files, ideally shared)
 
 document.addEventListener("DOMContentLoaded", async () => {
-  const sessdataInput = document.getElementById("sessdata") as HTMLInputElement;
-  const saveButton = document.getElementById("save-btn") as HTMLButtonElement;
   const statusDiv = document.getElementById("status") as HTMLDivElement;
 
   // Playlist Management DOM Elements (2)
@@ -86,54 +85,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  // Load existing SESSDATA settings
-  try {
-    const { authConfig } = await chrome.storage.sync.get('authConfig');
-    if (authConfig && authConfig.SESSDATA) {
-      sessdataInput.value = authConfig.SESSDATA;
-    }
-  } catch (error) {
-    console.error('Error loading settings:', error);
-  }
-
-  // Save SESSDATA settings
-  saveButton.addEventListener('click', async () => {
-    const SESSDATA = sessdataInput.value.trim();
-    
-    try {
-      await chrome.storage.sync.set({
-        authConfig: { SESSDATA } as AuthConfig // Explicitly type authConfig here
-      });
-      showStatus('SESSDATA 设置已保存！', 'success');
-    } catch (error: any) { // Explicitly type error
-      console.error('Error saving SESSDATA settings:', error);
-      showStatus('保存 SESSDATA 设置时出错，请重试。', 'error');
-    }
-  });
-
   // --- Playlist Management ---
 
   // Helper to fetch fresh video info via Background script
   async function fetchFreshVideoInfoFromBackground(bvid: string, cidGiven?: string): Promise<BilibiliVideoInfo | null> {
-    return new Promise((resolve) => {
-      const videoUrl = `https://www.bilibili.com/video/${bvid}`;
-      loadAuthConfig().then((authConfig: AuthConfig) => { // Explicitly type authConfig
-        chrome.runtime.sendMessage(
-          { action: "getBilibiliAudio", url: videoUrl, authConfig: authConfig, cid: cidGiven }, 
-          (response) => {
-            if (chrome.runtime.lastError) {
-              console.error("Error fetching fresh video info from background:", chrome.runtime.lastError.message);
-              resolve(null);
-            } else {
-              resolve(response as BilibiliVideoInfo | null);
-            }
-          }
-        );
-      }).catch((error: any) => { // Explicitly type error
-        console.error("Error loading auth config for fetching video info:", error);
-        resolve(null);
-      });
-    });
+    return requestBilibiliAudio(`https://www.bilibili.com/video/${bvid}`, cidGiven);
   }
 
   // Refactored function to open/send data to player window
@@ -146,10 +102,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const windows = await chrome.windows.getAll({ populate: true, windowTypes: ["popup", "normal"] });
       existingPlayerWindow = windows.find(win => 
-        win.tabs?.some(tab => tab.url === playerUrl && tab.id !== undefined)
+        win.tabs?.some(tab =>
+          (tab.url === playerUrl || tab.url?.startsWith(`${playerUrl}?`)) && tab.id !== undefined
+        )
       );
       if (existingPlayerWindow) {
-        playerTabId = existingPlayerWindow.tabs?.find(tab => tab.url === playerUrl)?.id;
+        playerTabId = existingPlayerWindow.tabs?.find(tab =>
+          tab.url === playerUrl || tab.url?.startsWith(`${playerUrl}?`)
+        )?.id;
       }
     } catch (error) {
       console.error("Error searching for existing player window:", error);
@@ -198,8 +158,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // 3. loadPlaylists Function
   async function loadPlaylists() {
     try {
-      const data = await chrome.storage.local.get('userPlaylists');
-      const playlists: Playlist[] = data.userPlaylists || [];
+      const playlists = await getUserPlaylists();
       renderPlaylists(playlists);
     } catch (error) {
       console.error('Error loading playlists:', error);
@@ -265,8 +224,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
 
     try {
-      const data = await chrome.storage.local.get('userPlaylists');
-      const playlists: Playlist[] = data.userPlaylists || [];
+      const playlists = await getUserPlaylists();
 
       // Check for duplicate names
       if (playlists.some(p => p.name === name)) {
@@ -300,8 +258,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     try {
-      const data = await chrome.storage.local.get('userPlaylists');
-      let playlists: Playlist[] = data.userPlaylists || [];
+      let playlists = await getUserPlaylists();
       playlists = playlists.filter(p => p.id !== playlistId);
       await chrome.storage.local.set({ userPlaylists: playlists });
       showStatus('播放合集已删除。', 'success');
@@ -317,8 +274,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const newName = prompt("请输入新的播放合集名称：", currentName);
     if (newName && newName.trim() !== "" && newName.trim() !== currentName) {
       try {
-        const data = await chrome.storage.local.get('userPlaylists');
-        let playlists: Playlist[] = data.userPlaylists || [];
+        const playlists = await getUserPlaylists();
         
         // Check for duplicate names (excluding the current playlist being renamed)
         if (playlists.some(p => p.name === newName.trim() && p.id !== playlistId)) {
@@ -385,8 +341,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function displayPlaylistItems(playlistId: string) {
     currentEditingPlaylistId = playlistId; // Store the current playlist ID
     try {
-      const data = await chrome.storage.local.get('userPlaylists');
-      const playlists: Playlist[] = data.userPlaylists || [];
+      const playlists = await getUserPlaylists();
       const playlist = playlists.find(p => p.id === playlistId);
 
       if (!playlist) {
@@ -470,8 +425,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       return;
     }
     try {
-      const data = await chrome.storage.local.get('userPlaylists');
-      let playlists: Playlist[] = data.userPlaylists || [];
+      const playlists = await getUserPlaylists();
       const playlistIndex = playlists.findIndex(p => p.id === playlistId);
 
       if (playlistIndex === -1) {
@@ -502,8 +456,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!fullHistoryListEl || !noFullHistoryMessageEl || !clearFullHistoryBtn) return;
 
     try {
-      const result = await chrome.storage.local.get("playbackHistory");
-      const history: HistoryItem[] = result.playbackHistory || [];
+      const history = await getPlaybackHistory();
 
       if (history.length === 0) {
         noFullHistoryMessageEl.style.display = "block";
@@ -591,16 +544,8 @@ document.addEventListener("DOMContentLoaded", async () => {
         return;
       }
 
-      // Prefer BVID if available, construct a URL that getBilibiliAudio can definitely use.
-      // The bvid is needed for fetching and for storing.
-      const bvidToFetch = videoIdParts.bvid || (videoIdParts.aid ? `av${videoIdParts.aid}` : null);
-      if (!bvidToFetch) { // Should not happen if previous check passed, but for safety
-        showStatus('无法确定视频的BVID。', 'error');
-        return;
-      }
-
       showStatus('正在提取视频信息...', 'info', 0);
-      const videoInfo = await fetchFreshVideoInfoFromBackground(bvidToFetch);
+      const videoInfo = await requestBilibiliAudio(videoUrl);
 
       if (!videoInfo || !videoInfo.bvid || !videoInfo.cid) { // Ensure we have bvid and cid
         showStatus('无法获取视频信息，请检查链接或视频是否有效。', 'error');
@@ -609,8 +554,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
       // 2. Add to playlist logic
       try {
-        const data = await chrome.storage.local.get('userPlaylists');
-        let playlists: Playlist[] = data.userPlaylists || [];
+        const playlists = await getUserPlaylists();
         const playlistIndex = playlists.findIndex(p => p.id === currentEditingPlaylistId);
 
         if (playlistIndex === -1) {
@@ -619,7 +563,9 @@ document.addEventListener("DOMContentLoaded", async () => {
         }
 
         // Check for duplicates within this playlist
-        if (playlists[playlistIndex].items.some(item => item.bvid === videoInfo.bvid)) {
+        if (playlists[playlistIndex].items.some(item =>
+          item.bvid === videoInfo.bvid && item.cid === videoInfo.cid
+        )) {
           showStatus(`视频 "${videoInfo.title}" 已存在于此播放合集中。`, 'error');
           addVideoUrlInput.value = ''; // Clear input
           return;

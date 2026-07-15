@@ -9,7 +9,7 @@ Bilibili Audio Player is a Chrome extension that extracts audio from Bilibili vi
 1. Extracts audio from Bilibili video URLs **or bare BV IDs** (e.g. `BV1xx411c7mD`), using an on-demand fetching mechanism to prevent expired links.
 2. Plays audio independently; closing the Bilibili video page does not affect audio playback.
 3. **Player Window Reuse**: Prefers to use an already open player window, avoiding duplicate windows.
-4. Automatically reads your logged-in Bilibili cookies from the browser — no manual configuration needed. Manual SESSDATA entry is also supported as a fallback.
+4. Reads an allowlisted set of required Bilibili cookies transiently in the background only when extracting audio; login credentials are never stored or synced.
 5. Automatically detects if the current page is a Bilibili video page.
 6. Provides a floating button, popup window, and a standalone player window.
 7. **Playback History:** Automatically records recently played audio (stored by video ID for persistence). View and replay your listening history in the extension popup, with support for viewing full history and clearing it on the settings page.
@@ -18,6 +18,8 @@ Bilibili Audio Player is a Chrome extension that extracts audio from Bilibili vi
     * **Manually add videos to a specific playlist by pasting a Bilibili video URL on the settings page**.
     * Add the currently playing audio to a playlist directly from the player.
     * View playlist contents and play audio from them on the settings page.
+9. **Multi-part selection:** Detects all video parts, respects `?p=` URLs, supports in-player switching, and automatically continues to the next part.
+10. **Playback speed:** Supports 0.25×–3× speed, ±0.05× fine adjustments, and remembers the last selection.
 
 ## Installation
 
@@ -47,27 +49,21 @@ Not yet listed on the Chrome Web Store. Please use Developer Mode installation.
 2. If the current page is a Bilibili video page, it will display video information and a "Play this video's audio" button.
 3. Alternatively, enter a Bilibili video URL **or a bare BV ID** (e.g. `BV1xx411c7mD`) and click "Extract and Play Audio".
 
-### Setting SESSDATA (Optional — for videos requiring login)
+### Login-only videos
 
-The extension automatically reads your logged-in Bilibili cookies from the browser, so manual configuration is usually unnecessary. If auto-detection fails, you can set it manually:
-
-1. Click the "Settings" link at the bottom of the extension popup.
-2. Enter your SESSDATA on the settings page.
-3. Click "Save Settings".
-
-How to obtain SESSDATA:
-1. Log in to the Bilibili website.
-2. Press F12 to open developer tools.
-3. Go to the **Application** tab.
-4. Find **Cookies > bilibili.com** on the left side.
-5. Find the cookie named `SESSDATA` and copy its value.
+Videos that require authentication use the Bilibili login state in the current browser. The extension never asks you to copy `SESSDATA` and never writes login cookies to extension storage; sign in directly on the Bilibili website.
 
 ## Player Controls
 
 The player window offers the following controls:
 - Play/Pause
+- Spacebar Play/Pause
+- Previous/next part (or previous/next track in playlist mode)
+- Skip backward/forward 10 seconds
 - Seekable progress bar
 - Volume adjustment
+- Multi-part episode selection
+- 0.25×–3× playback speed with ±0.05× fine adjustment
 - Add to Playlist button (add the current audio to one of your custom playlists)
 - Settings button (quick access to the settings page)
 

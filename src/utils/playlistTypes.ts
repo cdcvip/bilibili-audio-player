@@ -8,7 +8,7 @@ export interface PlaylistItem {
   title: string;
   bvid: string;       // Bilibili Video ID (should be primary identifier)
   cid: string;         // Bilibili Content ID (for multi-part videos)
-  audioUrl?: string;   // Optional: stores the most recently fetched audio URL
+  audioUrl?: string;   // Legacy-only field; new writes omit temporary CDN URLs
   addedAt: string;     // ISO date string, when the item was added to this playlist
 }
 

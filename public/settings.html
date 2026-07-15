@@ -177,22 +177,9 @@
   <div class="container">
     <h1>Bilibili 音频播放器设置</h1>
     
-    <div class="form-group">
-      <label for="sessdata">SESSDATA</label>
-      <input type="text" id="sessdata" placeholder="输入您的 SESSDATA">
-      <div class="help-text">
-        SESSDATA 用于访问需要登录的视频内容。获取方法：
-        <ol>
-          <li>登录 Bilibili 网站</li>
-          <li>按 F12 打开开发者工具</li>
-          <li>切换到 Application/应用 标签</li>
-          <li>在左侧找到 Cookies > bilibili.com</li>
-          <li>找到名为 SESSDATA 的 Cookie 并复制其值</li>
-        </ol>
-      </div>
+    <div class="help-text">
+      扩展仅在提取音频时临时读取必要的 Bilibili 登录 Cookie。Cookie 不会保存在扩展存储中，也不会发送给 Bilibili 以外的域名。
     </div>
-    
-    <button id="save-btn">保存设置</button>
     <div id="status" class="status"></div>
   </div>
 

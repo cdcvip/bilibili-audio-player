@@ -1,5 +1,4 @@
 import md5 from 'md5';
-import { AuthConfig } from './types';
 
 const mixinKeyEncTab = [
   46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35, 27, 43, 5, 49, 33, 9, 42, 19, 29, 28,
@@ -89,27 +88,4 @@ export const extractVideoId = (url: string): { aid?: string; bvid?: string } | n
  */
 export const isBilibiliVideoPage = (url: string): boolean => {
   return /bilibili\.com\/video\/(av\d+|BV[a-zA-Z0-9]+)/.test(url);
-};
-
-/**
- * Save authentication configuration to Chrome storage
- * @param authConfig Authentication configuration
- * @returns Promise resolving when save is complete
- */
-export const saveAuthConfig = async (authConfig: AuthConfig): Promise<void> => {
-  return new Promise((resolve) => {
-    chrome.storage.sync.set({ authConfig }, resolve);
-  });
-};
-
-/**
- * Load authentication configuration from Chrome storage
- * @returns Promise resolving to authentication configuration or empty object if not found
- */
-export const loadAuthConfig = async (): Promise<AuthConfig> => {
-  return new Promise((resolve) => {
-    chrome.storage.sync.get('authConfig', (result) => {
-      resolve((result.authConfig as AuthConfig) || { SESSDATA: '' });
-    });
-  });
 };
