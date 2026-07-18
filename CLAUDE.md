@@ -62,3 +62,38 @@ Both storage areas are restricted to trusted extension contexts; the Bilibili co
 - `bilibiliApi.ts` — API calls: `getBilibiliAudio`, `fetchVideoInfo`, `extractAudioUrl`, `initSignData`, `sign`
 - `runtimeApi.ts` — typed message helper for background-only API access
 - `util.ts` — `encWbi` (WBI signing), `extractVideoId` (accepts full URL **or** bare `BV1xxx`/`av123`), `isBilibiliVideoPage`
+
+## Pitfalls (Do Not Repeat)
+
+Lessons from real bugs in this project. Prefer these rules over inventing a “simpler” path.
+
+### Playback reliability (`src/player.ts`, `src/utils/bilibiliApi.ts`)
+
+- **Never rely on a single CDN URL.** Bilibili returns `baseUrl`/`base_url` plus `backupUrl`/`backup_url`. Collect an ordered candidate list (`audioUrls`) and fail over before re-fetching.
+- **Do not prefer Dolby first in Chrome.** Standard `dash.audio` is more compatible; keep Dolby only as fallback after DASH.
+- **Cap recovery.** Try candidates in order, then at most **one** full re-fetch of playurl. Infinite retry loops surface as intermittent “播放失败，请稍后重试”.
+- **Track generations, not just flags.** When switching tracks / parts / playlist items, bump `playerGeneration` and `audioRequestId`. Ignore stale `play()`, `onerror`, recovery, and in-flight `requestBilibiliAudio` results that no longer match.
+- **Respect user intent.** Set `playbackWanted = false` on pause / ended / autoplay-blocked. Recovery must not restart audio the user already stopped.
+- **Re-check generation after every `await`.** Classic race: `await checkIfVideoIsFavorited(...)` then assign `audioPlayer.onerror` / call `play()` for an old track and overwrite the new track’s handlers.
+
+### Floating UI (episode picker in `public/player.html` + `src/player.ts`)
+
+- **Ancestor `overflow` clips overlays.** `.player-container { overflow-y: auto }` will clip `position: absolute` menus. For a real float: move the panel to `document.body` and use `position: fixed` with coordinates from `getBoundingClientRect()`.
+- **Do not style open-state via a parent selector after portaling.** `.episode-control.is-open .episode-panel` stops matching once the panel is under `body`. Toggle an open class (or `[hidden]`) **on the panel itself**. Symptom: click “选集” appears to do nothing because the list stays `display: none`.
+- **Outside-click handlers must treat the portaled panel as inside.** Check both the trigger and `episodePanel.contains(target)`. Prefer `stopPropagation` on toggle/item clicks.
+- **Reposition on `resize` and capture-phase `scroll`.** Fixed coords go stale when the player container scrolls.
+
+### Versioning / release
+
+- **Keep these three in lockstep:** `package.json` `version`, `public/manifest.json` `version`, and the popup footer in `public/popup.html` (`#version`). Release workflow rejects tag vs package/manifest mismatch; the footer is easy to leave at an old value (e.g. `v1.0.0` while package is `1.2.x`).
+- **Release is tag-driven:** push `vX.Y.Z` after versions match; `.github/workflows/release.yml` builds and publishes the zip.
+
+### Git push from this environment
+
+- **Do not use HTTPS `origin` here.** It fails non-interactively with:
+  `fatal: could not read Username for 'https://github.com': No such device or address`
+- **Use SSH remote instead:**
+  `git remote set-url origin git@github.com:cdcvip/bilibili-audio-player.git`
+  then `git push origin main` / `git push origin vX.Y.Z`.
+- SSH key auth is already set up for `cdcvip`. Prefer `origin` after the URL fix; do not keep one-off `git push git@github.com:...` workarounds that leave tracking refs stale.
+- Network/DNS may still require elevated permissions in sandboxed agent runs.
