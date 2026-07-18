@@ -1,6 +1,6 @@
 {
   "name": "bilibili-audio-player",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Extract and play audio from Bilibili videos independently",
   "main": "index.js",
   "scripts": {

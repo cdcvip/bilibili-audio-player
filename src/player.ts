@@ -31,7 +31,12 @@ document.addEventListener('DOMContentLoaded', () => {
   const volumeSlider = document.getElementById('volume-slider') as HTMLDivElement;
   const volumeLevel = document.getElementById('volume-level') as HTMLDivElement;
   const episodeControl = document.getElementById('episode-control') as HTMLDivElement;
-  const episodeSelect = document.getElementById('episode-select') as HTMLSelectElement;
+  const episodeToggle = document.getElementById('episode-toggle') as HTMLButtonElement;
+  const episodeCurrent = document.getElementById('episode-current') as HTMLSpanElement;
+  const episodePanel = document.getElementById('episode-panel') as HTMLDivElement;
+  const episodeList = document.getElementById('episode-list') as HTMLUListElement;
+
+  document.body.appendChild(episodePanel);
   const playbackRateSelect = document.getElementById('playback-rate-select') as HTMLSelectElement;
   const playbackRateDown = document.getElementById('playback-rate-down') as HTMLButtonElement;
   const playbackRateUp = document.getElementById('playback-rate-up') as HTMLButtonElement;
@@ -68,8 +73,20 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastProgressSaveAt = 0;
   let progressWriteQueue: Promise<void> = Promise.resolve();
   let currentTrackCompleted = false;
+  let audioCandidates: string[] = [];
+  let audioCandidateIndex = -1;
+  let playerGeneration = 0;
+  let playbackWanted = false;
+  let playbackRecovery: Promise<boolean> | null = null;
+  let audioUrlRefreshes = 0;
+  let audioRequestId = 0;
+  const maxAudioUrlRefreshes = 1;
 
   type CurrentTrackData = BilibiliVideoInfo;
+
+  function getAudioCandidates(data: CurrentTrackData): string[] {
+    return [...new Set([data.audioUrl, ...(data.audioUrls || [])].filter(Boolean))];
+  }
 
   function isSameTrack(
     first: Pick<CurrentTrackData, 'bvid' | 'cid'>,
@@ -96,8 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
       currentPlaylistName = null;
       currentTrackIndex = -1;
       // videoData is now expected to include bvid and cid from popup.ts
-      videoData = message.data as CurrentTrackData; 
-      initializePlayer(videoData);
+      const nextVideoData = message.data as CurrentTrackData;
+      void initializePlayer(nextVideoData);
       updatePlaylistUI();
     }
   });
@@ -108,9 +125,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const cidParam = urlParams.get('cid');
   
   if (bvidParam && cidParam) {
+    const requestId = ++audioRequestId;
     showPlayerMessage('正在加载选集信息...', 'info');
     void requestBilibiliAudio(`https://www.bilibili.com/video/${bvidParam}`, cidParam)
       .then(freshInfo => {
+        if (requestId !== audioRequestId) return;
         if (freshInfo) {
           isPlaylistMode = false;
           void initializePlayer(freshInfo);
@@ -125,6 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function startOrContinuePlaylistPlayback() {
     if (isPlaylistMode && currentPlaylist && currentTrackIndex >= 0 && currentTrackIndex < currentPlaylist.length) {
       const trackItem = currentPlaylist[currentTrackIndex]; // This is a PlaylistItem
+      const requestId = ++audioRequestId;
       
       // Fetch fresh audio URL using bvid and cid from trackItem
       showPlayerMessage(`正在加载: ${trackItem.title}`, 'info');
@@ -132,6 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `https://www.bilibili.com/video/${trackItem.bvid}`,
         trackItem.cid,
       );
+      if (requestId !== audioRequestId) return;
 
       if (freshVideoInfo && freshVideoInfo.audioUrl) {
         await initializePlayer(freshVideoInfo);
@@ -165,20 +186,29 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     
+    audioRequestId++;
+    const generation = ++playerGeneration;
+    playbackWanted = true;
+
     if (videoData && audioPlayer.currentSrc && !currentTrackCompleted) {
       await persistCurrentProgress(true);
     }
 
-    // Store videoData at module level for access by other functions
-    videoData = data; // Ensure videoData is assigned here
-    currentTrackCompleted = false;
-
     const [, savedProgress] = await Promise.all([
-      updatePlaybackHistory(videoData),
-      getPlaybackProgress(videoData.bvid, videoData.cid),
+      updatePlaybackHistory(data),
+      getPlaybackProgress(data.bvid, data.cid),
     ]);
+    if (generation !== playerGeneration) return;
+
+    // Store videoData at module level for access by other functions
+    videoData = data;
+    currentTrackCompleted = false;
     pendingResumePosition = savedProgress?.currentTime || 0;
     lastProgressSaveAt = 0;
+    audioCandidates = getAudioCandidates(data);
+    audioCandidateIndex = 0;
+    audioUrlRefreshes = 0;
+    playbackRecovery = null;
     
     // Set video info
     headerTitle.textContent = videoData.title;
@@ -187,7 +217,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateEpisodeSelector(videoData);
     
     // Set audio source
-    audioPlayer.src = videoData.audioUrl;
+    audioPlayer.src = audioCandidates[audioCandidateIndex];
     audioPlayer.volume = 0.7; // Default volume
     audioPlayer.playbackRate = preferredPlaybackRate;
     
@@ -196,44 +226,245 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Check and set favorite icon state
     const isFav = await checkIfVideoIsFavorited(videoData);
+    if (generation !== playerGeneration) return;
     updateFavoriteIcon(isFav);
-    
+
     // Listen for media load errors (e.g. 403 from CDN)
     audioPlayer.onerror = () => {
+      if (generation !== playerGeneration || !playbackWanted) return;
       const code = audioPlayer.error?.code;
       const msg = audioPlayer.error?.message || '';
       console.error('Audio load error:', code, msg);
-      showPlayerMessage(`音频加载失败 (code ${code})，请检查网络或重试`, 'error');
+      void recoverPlayback(generation, `media error ${code}: ${msg}`);
     };
 
     // Muted autoplay bypasses Chrome's autoplay policy; unmute immediately after
-    audioPlayer.muted = true;
-    audioPlayer.play().then(() => {
-      audioPlayer.muted = false;
-    }).catch(error => {
-      audioPlayer.muted = false;
-      console.error('Auto-play failed:', error?.toString());
-      showPlayerMessage('自动播放失败，请点击播放按钮手动播放', 'error');
+    try {
+      await playCurrentSource(generation, true);
+    } catch (error) {
+      if (generation !== playerGeneration || isPlaybackInterrupted(error)) return;
+      console.error('Auto-play failed:', String(error));
+      if (isAutoplayBlocked(error)) {
+        playbackWanted = false;
+        showPlayerMessage('自动播放失败，请点击播放按钮手动播放', 'error');
+      } else {
+        await recoverPlayback(generation, String(error));
+      }
+    }
+  }
+
+  function isAutoplayBlocked(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'NotAllowedError';
+  }
+
+  function isPlaybackInterrupted(error: unknown): boolean {
+    return error instanceof DOMException && error.name === 'AbortError';
+  }
+
+  async function playCurrentSource(generation: number, muted: boolean): Promise<void> {
+    if (generation !== playerGeneration || !playbackWanted) return;
+    if (muted) audioPlayer.muted = true;
+    try {
+      await audioPlayer.play();
+    } finally {
+      if (generation === playerGeneration && muted) audioPlayer.muted = false;
+    }
+  }
+
+  async function recoverPlayback(generation: number, reason: string): Promise<boolean> {
+    if (generation !== playerGeneration || !videoData || !playbackWanted) return false;
+    if (playbackRecovery) return playbackRecovery;
+
+    const recovery = (async () => {
+      const recoveryRequestId = audioRequestId;
+      const resumePosition = Number.isFinite(audioPlayer.currentTime)
+        ? audioPlayer.currentTime
+        : pendingResumePosition;
+      console.warn('Recovering audio playback:', reason);
+
+      while (generation === playerGeneration &&
+             recoveryRequestId === audioRequestId &&
+             videoData && playbackWanted) {
+        audioCandidateIndex++;
+
+        if (audioCandidateIndex >= audioCandidates.length) {
+          if (audioUrlRefreshes >= maxAudioUrlRefreshes) break;
+
+          audioUrlRefreshes++;
+          showPlayerMessage('播放线路失效，正在重新获取...', 'info');
+          const freshInfo = await requestBilibiliAudio(
+            `https://www.bilibili.com/video/${videoData.bvid}`,
+            videoData.cid,
+          );
+          if (generation !== playerGeneration ||
+              recoveryRequestId !== audioRequestId ||
+              !playbackWanted) return false;
+          if (!freshInfo) break;
+
+          videoData = freshInfo;
+          audioCandidates = getAudioCandidates(freshInfo);
+          audioCandidateIndex = 0;
+        } else {
+          showPlayerMessage('当前线路不可用，正在切换备用线路...', 'info');
+        }
+
+        const candidate = audioCandidates[audioCandidateIndex];
+        if (!candidate) continue;
+        if (generation !== playerGeneration ||
+            recoveryRequestId !== audioRequestId ||
+            !playbackWanted) return false;
+
+        pendingResumePosition = resumePosition;
+        audioPlayer.src = candidate;
+        audioPlayer.load();
+
+        try {
+          await playCurrentSource(generation, true);
+          if (generation !== playerGeneration ||
+              recoveryRequestId !== audioRequestId ||
+              !playbackWanted) return false;
+          showPlayerMessage('已恢复播放', 'success');
+          return true;
+        } catch (error) {
+          if (generation !== playerGeneration ||
+              recoveryRequestId !== audioRequestId ||
+              !playbackWanted) return false;
+          if (isPlaybackInterrupted(error)) return false;
+          console.warn('Audio candidate failed:', audioCandidateIndex, String(error));
+        }
+      }
+
+      if (generation === playerGeneration &&
+          recoveryRequestId === audioRequestId &&
+          playbackWanted) {
+        playbackWanted = false;
+        showPlayerMessage('播放失败，请检查网络后重试', 'error');
+      }
+      return false;
+    })();
+    playbackRecovery = recovery;
+
+    try {
+      return await recovery;
+    } finally {
+      if (playbackRecovery === recovery) playbackRecovery = null;
+    }
+  }
+
+  function formatEpisodeLabel(page: { page: number; part: string }): string {
+    const part = page.part?.trim();
+    return part ? `P${page.page} ${part}` : `P${page.page}`;
+  }
+
+  function positionEpisodePanel() {
+    if (!episodeControl.classList.contains('is-open')) return;
+
+    const toggleRect = episodeToggle.getBoundingClientRect();
+    const viewportPadding = 8;
+    const gap = 4;
+    const maxWidth = Math.max(0, window.innerWidth - viewportPadding * 2);
+    const width = Math.min(toggleRect.width, maxWidth);
+    const left = Math.min(
+      Math.max(viewportPadding, toggleRect.left),
+      window.innerWidth - width - viewportPadding,
+    );
+
+    const spaceBelow = window.innerHeight - toggleRect.bottom - gap - viewportPadding;
+    const spaceAbove = toggleRect.top - gap - viewportPadding;
+    const preferBelow = spaceBelow >= 160 || spaceBelow >= spaceAbove;
+    const available = Math.max(120, preferBelow ? spaceBelow : spaceAbove);
+    const maxHeight = Math.min(280, available);
+
+    episodePanel.style.width = `${width}px`;
+    episodePanel.style.left = `${left}px`;
+    episodePanel.style.maxHeight = `${maxHeight}px`;
+
+    if (preferBelow) {
+      episodePanel.style.top = `${toggleRect.bottom + gap}px`;
+      episodePanel.style.bottom = 'auto';
+    } else {
+      episodePanel.style.top = 'auto';
+      episodePanel.style.bottom = `${window.innerHeight - toggleRect.top + gap}px`;
+    }
+  }
+
+  function setEpisodePanelOpen(open: boolean) {
+    episodeControl.classList.toggle('is-open', open);
+    episodePanel.classList.toggle('is-open', open);
+    episodeToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    episodePanel.hidden = !open;
+
+    if (!open) {
+      episodePanel.style.top = '';
+      episodePanel.style.bottom = '';
+      episodePanel.style.left = '';
+      episodePanel.style.width = '';
+      episodePanel.style.maxHeight = '';
+      return;
+    }
+
+    positionEpisodePanel();
+    const activeItem = episodeList.querySelector<HTMLElement>('.episode-item.is-active');
+    activeItem?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function setEpisodeControlsEnabled(enabled: boolean) {
+    episodeToggle.disabled = !enabled;
+    episodeList.querySelectorAll<HTMLButtonElement>('.episode-item').forEach(item => {
+      item.disabled = !enabled;
     });
-    
   }
 
   function updateEpisodeSelector(data: CurrentTrackData) {
-    episodeSelect.innerHTML = '';
+    episodeList.innerHTML = '';
 
     if (data.pages.length <= 1) {
+      setEpisodePanelOpen(false);
       episodeControl.style.display = 'none';
+      episodeCurrent.textContent = '—';
       updateNavigationControls();
       return;
     }
 
+    const currentPage = data.pages.find(page => page.cid === data.cid) || data.pages[data.page - 1];
+    episodeCurrent.textContent = currentPage
+      ? `${formatEpisodeLabel(currentPage)} · ${data.pages.length} 集`
+      : `P${data.page} · ${data.pages.length} 集`;
+
     data.pages.forEach(page => {
-      const option = document.createElement('option');
-      option.value = page.cid;
-      option.textContent = `P${page.page} ${page.part}`;
-      option.selected = page.cid === data.cid;
-      episodeSelect.appendChild(option);
+      const item = document.createElement('li');
+      item.setAttribute('role', 'none');
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'episode-item' + (page.cid === data.cid ? ' is-active' : '');
+      button.dataset.cid = page.cid;
+      button.setAttribute('role', 'option');
+      button.setAttribute('aria-selected', page.cid === data.cid ? 'true' : 'false');
+
+      const index = document.createElement('span');
+      index.className = 'episode-item-index';
+      index.textContent = `P${page.page}`;
+
+      const title = document.createElement('span');
+      title.className = 'episode-item-title';
+      title.textContent = page.part?.trim() || `第 ${page.page} 集`;
+
+      button.append(index, title);
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (page.cid === data.cid) {
+          setEpisodePanelOpen(false);
+          return;
+        }
+        void switchEpisode(page.cid);
+      });
+
+      item.appendChild(button);
+      episodeList.appendChild(item);
     });
+
     episodeControl.style.display = 'flex';
     updateNavigationControls();
   }
@@ -241,7 +472,9 @@ document.addEventListener('DOMContentLoaded', () => {
   async function switchEpisode(selectedCid: string, automatic = false) {
     if (!videoData || selectedCid === videoData.cid) return;
 
-    episodeSelect.disabled = true;
+    const requestId = ++audioRequestId;
+    setEpisodePanelOpen(false);
+    setEpisodeControlsEnabled(false);
     showPlayerMessage(automatic ? '正在自动播放下一集...' : '正在切换选集...', 'info');
 
     try {
@@ -249,6 +482,7 @@ document.addEventListener('DOMContentLoaded', () => {
         `https://www.bilibili.com/video/${videoData.bvid}`,
         selectedCid,
       );
+      if (requestId !== audioRequestId) return;
       if (!freshInfo) {
         updateEpisodeSelector(videoData);
         showPlayerMessage('切换选集失败，请稍后重试', 'error');
@@ -266,13 +500,37 @@ document.addEventListener('DOMContentLoaded', () => {
       if (videoData) updateEpisodeSelector(videoData);
       showPlayerMessage('切换选集失败，请稍后重试', 'error');
     } finally {
-      episodeSelect.disabled = false;
+      setEpisodeControlsEnabled(true);
     }
   }
 
-  episodeSelect.addEventListener('change', () => {
-    void switchEpisode(episodeSelect.value);
+  episodeToggle.addEventListener('click', event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (episodeToggle.disabled) return;
+    setEpisodePanelOpen(!episodeControl.classList.contains('is-open'));
   });
+
+  document.addEventListener('click', event => {
+    if (!episodeControl.classList.contains('is-open')) return;
+    const target = event.target as Node | null;
+    if (target && (episodeControl.contains(target) || episodePanel.contains(target))) return;
+    setEpisodePanelOpen(false);
+  });
+
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape' && episodeControl.classList.contains('is-open')) {
+      setEpisodePanelOpen(false);
+    }
+  });
+
+  window.addEventListener('resize', () => {
+    if (episodeControl.classList.contains('is-open')) positionEpisodePanel();
+  });
+
+  document.addEventListener('scroll', () => {
+    if (episodeControl.classList.contains('is-open')) positionEpisodePanel();
+  }, true);
 
   function normalizePlaybackRate(rate: number): number {
     const clamped = Math.max(minPlaybackRate, Math.min(maxPlaybackRate, rate));
@@ -379,11 +637,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!audioPlayer.currentSrc) return;
 
     if (audioPlayer.paused) {
-      void audioPlayer.play().catch(error => {
+      playbackWanted = true;
+      const generation = playerGeneration;
+      void playCurrentSource(generation, false).catch(error => {
+        if (generation !== playerGeneration || isPlaybackInterrupted(error)) return;
         console.error('Manual play failed:', error);
-        showPlayerMessage('播放失败，请稍后重试', 'error');
+        void recoverPlayback(generation, String(error));
       });
     } else {
+      playbackWanted = false;
       audioPlayer.pause();
       void persistCurrentProgress(true);
     }
@@ -448,6 +710,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function initializeCustomControls() {
     // Audio ended listener (for playlist progression)
     audioPlayer.addEventListener('ended', () => {
+      playbackWanted = false;
       currentTrackCompleted = true;
       void clearCurrentProgress();
       if (isPlaylistMode && currentPlaylist) {

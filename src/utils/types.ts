@@ -8,6 +8,7 @@ export interface BilibiliVideoInfo {
   cid: string;       // Content ID (essential for playback, especially multi-part videos)
   bvid: string;      // BV ID (preferred identifier)
   audioUrl: string;  // Freshly fetched audio URL with expiry
+  audioUrls?: string[]; // Ordered primary/backup URLs for playback recovery
   page: number;      // Selected part number (1-based)
   pages: BilibiliPageInfo[];
 }
@@ -65,6 +66,8 @@ export interface DashAudioStream {
   id: number;
   baseUrl?: string;    // Preferred URL key
   base_url?: string;   // Alternative URL key used in some API versions
+  backupUrl?: string[];
+  backup_url?: string[];
   bandwidth: number;   // Audio quality indicator (higher is better)
   [key: string]: any; // Allow other properties
 }

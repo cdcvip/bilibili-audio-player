@@ -239,10 +239,28 @@ export const fetchVideoInfo = async (
   }
 };
 
-export const extractAudioUrl = async (
+function getStreamUrls(stream: {
+  baseUrl?: string;
+  base_url?: string;
+  backupUrl?: string[];
+  backup_url?: string[];
+}): string[] {
+  return [
+    stream.baseUrl,
+    stream.base_url,
+    ...(stream.backupUrl || []),
+    ...(stream.backup_url || []),
+  ].filter((url): url is string => typeof url === 'string' && url.length > 0);
+}
+
+function uniqueUrls(urls: string[]): string[] {
+  return [...new Set(urls)];
+}
+
+export const extractAudioUrls = async (
   videoInfo: { aid: string; bvid: string; cid: string },
   authConfig?: AuthConfig
-): Promise<string | null> => {
+): Promise<string[]> => {
   try {
     const params: Record<string, string> = {
       avid: videoInfo.aid,
@@ -259,27 +277,41 @@ export const extractAudioUrl = async (
       authConfig
     );
     
-    // Dolby Atmos takes priority (highest quality)
-    if (data.dolby?.audio && data.dolby.audio.length > 0) {
-      const best = data.dolby.audio.reduce((a, b) => b.bandwidth > a.bandwidth ? b : a);
-      return best.baseUrl || best.base_url || null;
+    const candidates: string[] = [];
+
+    // Standard DASH audio is supported more consistently by Chrome than Dolby.
+    if (data.dash && data.dash.audio && data.dash.audio.length > 0) {
+      const streams = [...data.dash.audio].sort((a, b) => b.bandwidth - a.bandwidth);
+      streams.forEach(stream => candidates.push(...getStreamUrls(stream)));
     }
 
-    if (data.dash && data.dash.audio && data.dash.audio.length > 0) {
-      const best = data.dash.audio.reduce((a, b) => b.bandwidth > a.bandwidth ? b : a);
-      return best.baseUrl || best.base_url || null;
+    // Keep Dolby as a fallback for videos that do not expose a standard stream.
+    if (data.dolby?.audio && data.dolby.audio.length > 0) {
+      const streams = [...data.dolby.audio].sort((a, b) => b.bandwidth - a.bandwidth);
+      streams.forEach(stream => candidates.push(...getStreamUrls(stream)));
     }
 
     if (data.durl && data.durl.length > 0 && data.durl[0].url) {
-      return data.durl[0].url;
+      candidates.push(...data.durl.map(item => item.url).filter(Boolean));
     }
+
+    const urls = uniqueUrls(candidates);
+    if (urls.length > 0) return urls;
     
     console.warn('No audio stream found in API response for video:', videoInfo.bvid);
-    return null; 
+    return [];
   } catch (error) {
     console.error('Error extracting audio URL:', error);
-    return null;
+    return [];
   }
+};
+
+export const extractAudioUrl = async (
+  videoInfo: { aid: string; bvid: string; cid: string },
+  authConfig?: AuthConfig
+): Promise<string | null> => {
+  const urls = await extractAudioUrls(videoInfo, authConfig);
+  return urls[0] || null;
 };
 
 export const getBilibiliAudio = async (
@@ -318,8 +350,8 @@ export const getBilibiliAudio = async (
     }
 
     const selectedVideoInfo = { ...videoInfo, cid: selectedPage.cid };
-    const audioUrl = await extractAudioUrl(selectedVideoInfo, authConfig);
-    if (!audioUrl) {
+    const audioUrls = await extractAudioUrls(selectedVideoInfo, authConfig);
+    if (audioUrls.length === 0) {
       throw new Error('Failed to extract audio URL');
     }
 
@@ -330,7 +362,8 @@ export const getBilibiliAudio = async (
       aid: videoInfo.aid,
       bvid: videoInfo.bvid,
       cid: selectedPage.cid,
-      audioUrl,
+      audioUrl: audioUrls[0],
+      audioUrls,
       page: selectedPage.page,
       pages: videoInfo.pages,
     };

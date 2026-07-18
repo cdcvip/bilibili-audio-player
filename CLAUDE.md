@@ -41,7 +41,7 @@ Static HTML files in `public/` are copied verbatim to `dist/` alongside the comp
 
 **CDN Referer fix**: The `<audio>` element in a `chrome-extension://` page sends a non-bilibili Referer, causing CDN 403s. A `declarativeNetRequest` dynamic rule rewrites the `Referer` and `Origin` headers only for media requests to `*.bilivideo.com` and `*.bilivideo.cn` initiated by this extension.
 
-**fnval for audio quality**: Use `fnval=4048` (not `16`) to request DASH + FLAC + Dolby streams. Audio selection priority: `dolby.audio` → `dash.audio` (highest bandwidth) → `durl` fallback.
+**fnval for audio quality**: Use `fnval=4048` (not `16`) to request DASH + FLAC + Dolby streams. Audio selection priority: standard `dash.audio` (highest bandwidth, better Chrome compatibility) → `dolby.audio` fallback → `durl` fallback. Collect primary + backup CDN URLs (`baseUrl`/`backupUrl`) so the player can fail over without re-fetching immediately.
 
 **Autoplay policy**: New popup windows have no user-interaction history; `play()` is blocked by Chrome. Workaround: set `audioPlayer.muted = true` before `play()`, then unmute in the `.then()` callback.
 

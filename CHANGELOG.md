@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-07-18
+
+### Added
+- Collapsible floating multi-part episode picker with full titles and current-episode highlight.
+
+### Fixed
+- Intermittent audio playback failures by collecting primary/backup CDN URLs, preferring standard DASH over Dolby, and recovering with candidate failover plus one re-fetch.
+- Stale playback recovery races when switching tracks or reusing the player window.
+- Popup footer version display left at an outdated value.
+
 ## [1.2.0] - 2026-07-15
 
 ### Added

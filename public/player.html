@@ -88,6 +88,121 @@
       background: #fff;
       color: #333;
     }
+    .episode-control {
+      display: none;
+      position: relative;
+      z-index: 20;
+      flex-direction: column;
+      gap: 0;
+      margin-top: 10px;
+    }
+    .episode-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid #e7d6dd;
+      border-radius: 8px;
+      background: #fff;
+      color: #333;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+    }
+    .episode-toggle:hover:not(:disabled) {
+      border-color: #fb7299;
+    }
+    .episode-toggle:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .episode-toggle-label {
+      flex: 0 0 auto;
+      color: #888;
+      font-size: 12px;
+    }
+    .episode-current {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      color: #333;
+    }
+    .episode-toggle-chevron {
+      flex: 0 0 auto;
+      color: #999;
+      font-size: 12px;
+      transition: transform 0.15s ease;
+    }
+    .episode-control.is-open .episode-toggle-chevron {
+      transform: rotate(180deg);
+    }
+    .episode-control.is-open .episode-toggle {
+      border-color: #fb7299;
+      box-shadow: 0 0 0 1px rgba(251, 114, 153, 0.12);
+    }
+    .episode-panel {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      max-height: min(280px, 45vh);
+      overflow: auto;
+      border: 1px solid #f0c2d1;
+      border-radius: 10px;
+      background: #fff;
+      box-shadow: 0 12px 28px rgba(33, 33, 33, 0.16), 0 2px 8px rgba(251, 114, 153, 0.12);
+    }
+    .episode-panel.is-open {
+      display: block;
+    }
+    .episode-list {
+      list-style: none;
+      margin: 0;
+      padding: 4px 0;
+    }
+    .episode-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      width: 100%;
+      padding: 8px 10px;
+      border: none;
+      background: transparent;
+      color: #333;
+      cursor: pointer;
+      text-align: left;
+      font: inherit;
+      line-height: 1.35;
+    }
+    .episode-item:hover,
+    .episode-item:focus-visible {
+      background: #fff1f5;
+      outline: none;
+    }
+    .episode-item.is-active {
+      background: #ffe4ed;
+      color: #d94877;
+      font-weight: 600;
+    }
+    .episode-item-index {
+      flex: 0 0 auto;
+      min-width: 2.2em;
+      color: #999;
+      font-size: 12px;
+    }
+    .episode-item.is-active .episode-item-index {
+      color: #fb7299;
+    }
+    .episode-item-title {
+      flex: 1;
+      min-width: 0;
+      white-space: normal;
+      word-break: break-word;
+      font-size: 13px;
+    }
     .playback-options {
       justify-content: flex-end;
       margin: 0 0 12px;
@@ -437,9 +552,15 @@
       </div>
       <div class="video-title" id="video-title">加载中...</div>
       <div class="video-id" id="video-id"></div>
-      <div class="player-option-row" id="episode-control" style="display: none;">
-        <label for="episode-select">选集</label>
-        <select id="episode-select" aria-label="选择分集"></select>
+      <div class="episode-control" id="episode-control" style="display: none;">
+        <button type="button" class="episode-toggle" id="episode-toggle" aria-expanded="false" aria-controls="episode-panel">
+          <span class="episode-toggle-label">选集</span>
+          <span class="episode-current" id="episode-current">—</span>
+          <span class="episode-toggle-chevron" aria-hidden="true">▾</span>
+        </button>
+        <div class="episode-panel" id="episode-panel" hidden>
+          <ul class="episode-list" id="episode-list" role="listbox" aria-label="分集列表"></ul>
+        </div>
       </div>
     </div>
     

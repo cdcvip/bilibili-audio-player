@@ -92,12 +92,23 @@ function isValidVideoInfo(data: unknown): data is BilibiliVideoInfo {
     typeof value.cid === 'string' && /^\d+$/.test(String(value.cid)) &&
     typeof value.page === 'number' &&
     Array.isArray(value.pages) &&
-    isTrustedAudioUrl(value.audioUrl);
+    isTrustedAudioUrl(value.audioUrl) &&
+    (value.audioUrls === undefined ||
+      (Array.isArray(value.audioUrls) &&
+        value.audioUrls.length > 0 &&
+        value.audioUrls.every(isTrustedAudioUrl)));
 }
 
 async function fetchAudioInfo(url: string, cid?: string): Promise<BilibiliVideoInfo | null> {
   const cookieString = await getBilibiliAuthCookieString();
-  return getBilibiliAudio(url, { cookieString }, cid);
+  const info = await getBilibiliAudio(url, { cookieString }, cid);
+  if (!info) return null;
+
+  const audioUrls = [...new Set([info.audioUrl, ...(info.audioUrls || [])])]
+    .filter(isTrustedAudioUrl);
+  if (audioUrls.length === 0) return null;
+
+  return { ...info, audioUrl: audioUrls[0], audioUrls };
 }
 
 function openPlayer(data: BilibiliVideoInfo): void {
