@@ -330,13 +330,16 @@
       color: #666;
     }
     .volume-slider {
-      width: 52px;
-      height: 6px;
+      width: 72px;
+      height: 8px;
       background-color: #ddd;
       border-radius: 3px;
-      cursor: pointer;
+      cursor: ew-resize;
       position: relative;
+      touch-action: none;
+      outline: none;
     }
+    .volume-slider:focus-visible { outline: 2px solid #fb7299; outline-offset: 3px; }
     .volume-level {
       height: 100%;
       background-color: #fb7299;
@@ -602,8 +605,10 @@
       <div class="time-display" id="time-display">00:00 / 00:00</div>
       
       <div class="volume-container">
-        <div class="volume-icon icon-volume" id="volume-icon"></div>
-        <div class="volume-slider" id="volume-slider">
+        <div class="volume-icon icon-volume" id="volume-icon" role="button" tabindex="0"
+             aria-label="静音/取消静音" title="静音/取消静音"></div>
+        <div class="volume-slider" id="volume-slider" role="slider" tabindex="0"
+             aria-label="音量" aria-valuemin="0" aria-valuemax="100" aria-valuenow="70">
           <div class="volume-level" id="volume-level"></div>
         </div>
       </div>

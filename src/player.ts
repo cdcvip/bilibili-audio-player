@@ -69,6 +69,10 @@ document.addEventListener('DOMContentLoaded', () => {
   const maxPlaybackRate = 3;
   const playbackRateStep = 0.05;
   let preferredPlaybackRate = 1;
+  let preferredVolume = 0.7;
+  let lastNonZeroVolume = 0.7;
+  // Load volume before the first track is initialized so switching tracks does not reset it.
+  const volumeReady = loadVolume();
   let pendingResumePosition = 0;
   let lastProgressSaveAt = 0;
   let progressWriteQueue: Promise<void> = Promise.resolve();
@@ -186,6 +190,7 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     
+    await volumeReady;
     audioRequestId++;
     const generation = ++playerGeneration;
     playbackWanted = true;
@@ -218,11 +223,13 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Set audio source
     audioPlayer.src = audioCandidates[audioCandidateIndex];
-    audioPlayer.volume = 0.7; // Default volume
+    audioPlayer.volume = preferredVolume;
     audioPlayer.playbackRate = preferredPlaybackRate;
     
     // Update volume level display
     updateVolumeLevel(audioPlayer.volume);
+    volumeIcon.className = audioPlayer.volume > 0 ? 'volume-icon icon-volume' : 'volume-icon icon-mute';
+    volumeSlider.setAttribute('aria-valuenow', String(Math.round(audioPlayer.volume * 100)));
 
     // Check and set favorite icon state
     const isFav = await checkIfVideoIsFavorited(videoData);
@@ -809,26 +816,66 @@ document.addEventListener('DOMContentLoaded', () => {
     });
     
     // Volume control
-    volumeIcon.addEventListener('click', () => {
-      if (audioPlayer.volume > 0) {
-        audioPlayer.volume = 0;
-        volumeIcon.className = 'volume-icon icon-mute';
-      } else {
-        audioPlayer.volume = 0.7;
-        volumeIcon.className = 'volume-icon icon-volume';
-      }
-      updateVolumeLevel(audioPlayer.volume);
-    });
-    
-    // Click on volume slider to change volume
-    volumeSlider.addEventListener('click', (e) => {
+    const setVolume = (volume: number, persist = true) => {
+      if (!Number.isFinite(volume)) return;
+      preferredVolume = Math.max(0, Math.min(1, volume));
+      audioPlayer.volume = preferredVolume;
+      if (preferredVolume > 0) lastNonZeroVolume = preferredVolume;
+      updateVolumeLevel(preferredVolume);
+      volumeIcon.className = preferredVolume > 0 ? 'volume-icon icon-volume' : 'volume-icon icon-mute';
+      volumeSlider.setAttribute('aria-valuenow', String(Math.round(preferredVolume * 100)));
+      if (persist) void chrome.storage.local.set({ volume: preferredVolume });
+    };
+
+    const setVolumeFromPointer = (event: PointerEvent, persist = false) => {
       const rect = volumeSlider.getBoundingClientRect();
-      const pos = (e.clientX - rect.left) / rect.width;
-      audioPlayer.volume = Math.max(0, Math.min(1, pos));
-      updateVolumeLevel(audioPlayer.volume);
-      
-      // Update volume icon
-      volumeIcon.className = audioPlayer.volume > 0 ? 'volume-icon icon-volume' : 'volume-icon icon-mute';
+      if (rect.width <= 0) return;
+      setVolume((event.clientX - rect.left) / rect.width, persist);
+    };
+
+    volumeIcon.addEventListener('click', () => {
+      if (preferredVolume > 0) {
+        lastNonZeroVolume = preferredVolume;
+        setVolume(0);
+      } else {
+        setVolume(lastNonZeroVolume || 0.7);
+      }
+    });
+    volumeIcon.addEventListener('keydown', event => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      volumeIcon.click();
+    });
+
+    // Click/drag on the volume slider to change volume.
+    volumeSlider.addEventListener('pointerdown', event => {
+      volumeSlider.setPointerCapture(event.pointerId);
+      setVolumeFromPointer(event, true);
+    });
+    volumeSlider.addEventListener('pointermove', event => {
+      if (volumeSlider.hasPointerCapture(event.pointerId)) setVolumeFromPointer(event);
+    });
+    volumeSlider.addEventListener('pointerup', event => {
+      if (volumeSlider.hasPointerCapture(event.pointerId)) {
+        setVolumeFromPointer(event, true);
+        volumeSlider.releasePointerCapture(event.pointerId);
+      }
+    });
+    volumeSlider.addEventListener('keydown', event => {
+      const step = event.shiftKey ? 0.01 : 0.05;
+      if (event.key === 'ArrowLeft' || event.key === 'ArrowDown') {
+        event.preventDefault();
+        setVolume(preferredVolume - step);
+      } else if (event.key === 'ArrowRight' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        setVolume(preferredVolume + step);
+      } else if (event.key === 'Home') {
+        event.preventDefault();
+        setVolume(0);
+      } else if (event.key === 'End') {
+        event.preventDefault();
+        setVolume(1);
+      }
     });
     
     // Settings button
@@ -958,6 +1005,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     });
+  }
+
+  async function loadVolume() {
+    try {
+      const result = await chrome.storage.local.get<{ volume?: unknown }>('volume');
+      if (typeof result.volume === 'number' && Number.isFinite(result.volume)) {
+        preferredVolume = Math.max(0, Math.min(1, result.volume));
+        if (preferredVolume > 0) lastNonZeroVolume = preferredVolume;
+      }
+    } catch (error) {
+      console.error('Error loading volume:', error);
+    }
   }
   
   // Update volume level display
