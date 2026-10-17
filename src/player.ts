@@ -74,6 +74,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Load volume before the first track is initialized so switching tracks does not reset it.
   const volumeReady = loadVolume();
   let pendingResumePosition = 0;
+  // Last position we actually observed playing, so a recovery that has to reset
+  // `audioPlayer.src` can still resume where the user left off.
+  let lastKnownPosition = 0;
   let lastProgressSaveAt = 0;
   let progressWriteQueue: Promise<void> = Promise.resolve();
   let currentTrackCompleted = false;
@@ -81,10 +84,20 @@ document.addEventListener('DOMContentLoaded', () => {
   let audioCandidateIndex = -1;
   let playerGeneration = 0;
   let playbackWanted = false;
+  let playbackFailed = false;
   let playbackRecovery: Promise<boolean> | null = null;
   let audioUrlRefreshes = 0;
   let audioRequestId = 0;
+  let autoRecoveryAttempts = 0;
+  let lastFailureAt = 0;
+  let autoRecoveryTimer: number | null = null;
+  let stallWatchdogTimer: number | null = null;
+  let messageTimer: number | null = null;
   const maxAudioUrlRefreshes = 1;
+  const maxAutoRecoveryAttempts = 3;
+  const autoRecoveryDelaysMs = [2000, 5000, 10000];
+  const autoRecoveryResetAfterMs = 60000;
+  const stallWatchdogMs = 20000;
 
   type CurrentTrackData = BilibiliVideoInfo;
 
@@ -97,6 +110,81 @@ document.addEventListener('DOMContentLoaded', () => {
     second: Pick<PlaylistItem, 'bvid' | 'cid'>,
   ): boolean {
     return first.bvid === second.bvid && first.cid === second.cid;
+  }
+
+  // A fresh recovery budget: retry the current URL first, then the backups,
+  // then one full re-fetch of the playurl.
+  function resetRecoveryBudget() {
+    audioCandidateIndex = -1;
+    audioUrlRefreshes = 0;
+  }
+
+  function clearAutoRecoveryTimer() {
+    if (autoRecoveryTimer !== null) {
+      window.clearTimeout(autoRecoveryTimer);
+      autoRecoveryTimer = null;
+    }
+  }
+
+  function clearStallWatchdog() {
+    if (stallWatchdogTimer !== null) {
+      window.clearTimeout(stallWatchdogTimer);
+      stallWatchdogTimer = null;
+    }
+  }
+
+  // A stream that dies mid-playback (expired CDN URL, dropped connection) can
+  // stall without ever firing `error`, which used to leave the player frozen
+  // with no message and no recovery.
+  function armStallWatchdog() {
+    clearStallWatchdog();
+    if (!playbackWanted || audioPlayer.paused || audioPlayer.ended) return;
+
+    const generation = playerGeneration;
+    const positionWhenArmed = audioPlayer.currentTime;
+    stallWatchdogTimer = window.setTimeout(() => {
+      stallWatchdogTimer = null;
+      if (generation !== playerGeneration || !playbackWanted) return;
+      if (audioPlayer.paused || audioPlayer.ended) return;
+      // Playback resumed on its own; nothing to do.
+      if (Number.isFinite(positionWhenArmed) &&
+          Math.abs(audioPlayer.currentTime - positionWhenArmed) > 0.5) return;
+
+      console.warn('Playback stalled without a media error; attempting recovery');
+      void recoverPlayback(generation, 'playback stalled');
+    }, stallWatchdogMs);
+  }
+
+  // Recovery is deliberately capped, so a failure stops the loop. Keep a
+  // bounded, backed-off retry alive afterwards so a transient outage heals
+  // without the user having to do anything.
+  function scheduleAutoRecovery(generation: number) {
+    clearAutoRecoveryTimer();
+    if (autoRecoveryAttempts >= maxAutoRecoveryAttempts) return;
+
+    const delay = autoRecoveryDelaysMs[Math.min(autoRecoveryAttempts, autoRecoveryDelaysMs.length - 1)];
+    autoRecoveryAttempts++;
+    autoRecoveryTimer = window.setTimeout(() => {
+      autoRecoveryTimer = null;
+      if (generation !== playerGeneration) return;
+      // Offline: wait for the `online` event instead of burning attempts.
+      if (!navigator.onLine) return;
+      retryFailedPlayback('scheduled retry');
+    }, delay);
+  }
+
+  // Restart the current track after a failure, with a fresh budget. Safe to
+  // call from a manual play click, the `online` event, or a scheduled retry.
+  function retryFailedPlayback(reason: string) {
+    if (!videoData || !playbackFailed) return;
+    // Never restart audio that is actually playing; a paused or errored
+    // element is the only state we recover from.
+    if (!audioPlayer.paused && !audioPlayer.error) return;
+
+    playbackFailed = false;
+    resetRecoveryBudget();
+    playbackWanted = true;
+    void recoverPlayback(playerGeneration, reason);
   }
   
   // Listen for messages from popup
@@ -209,10 +297,16 @@ document.addEventListener('DOMContentLoaded', () => {
     videoData = data;
     currentTrackCompleted = false;
     pendingResumePosition = savedProgress?.currentTime || 0;
+    lastKnownPosition = pendingResumePosition;
     lastProgressSaveAt = 0;
     audioCandidates = getAudioCandidates(data);
     audioCandidateIndex = 0;
     audioUrlRefreshes = 0;
+    autoRecoveryAttempts = 0;
+    lastFailureAt = 0;
+    playbackFailed = false;
+    clearAutoRecoveryTimer();
+    clearStallWatchdog();
     playbackRecovery = null;
     
     // Set video info
@@ -284,14 +378,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const recovery = (async () => {
       const recoveryRequestId = audioRequestId;
-      const resumePosition = Number.isFinite(audioPlayer.currentTime)
-        ? audioPlayer.currentTime
-        : pendingResumePosition;
+      // After a failed attempt `audioPlayer.currentTime` is already back to 0,
+      // so fall back to the last position we know was really playing.
+      const currentPosition = Number.isFinite(audioPlayer.currentTime) ? audioPlayer.currentTime : 0;
+      const resumePosition = Math.max(currentPosition, lastKnownPosition);
       console.warn('Recovering audio playback:', reason);
 
       while (generation === playerGeneration &&
              recoveryRequestId === audioRequestId &&
              videoData && playbackWanted) {
+        clearStallWatchdog();
         audioCandidateIndex++;
 
         if (audioCandidateIndex >= audioCandidates.length) {
@@ -330,13 +426,18 @@ document.addEventListener('DOMContentLoaded', () => {
           if (generation !== playerGeneration ||
               recoveryRequestId !== audioRequestId ||
               !playbackWanted) return false;
+          clearStallWatchdog();
           showPlayerMessage('已恢复播放', 'success');
           return true;
         } catch (error) {
           if (generation !== playerGeneration ||
               recoveryRequestId !== audioRequestId ||
               !playbackWanted) return false;
-          if (isPlaybackInterrupted(error)) return false;
+          if (isPlaybackInterrupted(error)) {
+            // `load()` aborts the pending play() promise; keep walking candidates.
+            console.warn('Audio candidate play aborted:', audioCandidateIndex);
+            continue;
+          }
           console.warn('Audio candidate failed:', audioCandidateIndex, String(error));
         }
       }
@@ -345,7 +446,11 @@ document.addEventListener('DOMContentLoaded', () => {
           recoveryRequestId === audioRequestId &&
           playbackWanted) {
         playbackWanted = false;
+        playbackFailed = true;
+        lastFailureAt = Date.now();
+        playIcon.className = 'icon-play';
         showPlayerMessage('播放失败，请检查网络后重试', 'error');
+        scheduleAutoRecovery(generation);
       }
       return false;
     })();
@@ -641,11 +746,24 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function togglePlayback() {
-    if (!audioPlayer.currentSrc) return;
+    if (!audioPlayer.currentSrc && !videoData) return;
 
     if (audioPlayer.paused) {
+      // A click on play is an explicit retry: clear the failure latch and hand
+      // recovery a fresh budget, otherwise the capped loop refuses to try again.
       playbackWanted = true;
+      playbackFailed = false;
+      autoRecoveryAttempts = 0;
+      clearAutoRecoveryTimer();
+      resetRecoveryBudget();
+
       const generation = playerGeneration;
+      // The element may still be latched in a fatal error state, where play()
+      // resolves or rejects without ever loading audio. Go straight to recovery.
+      if (audioPlayer.error) {
+        void recoverPlayback(generation, `manual retry after media error ${audioPlayer.error.code}`);
+        return;
+      }
       void playCurrentSource(generation, false).catch(error => {
         if (generation !== playerGeneration || isPlaybackInterrupted(error)) return;
         console.error('Manual play failed:', error);
@@ -653,6 +771,9 @@ document.addEventListener('DOMContentLoaded', () => {
       });
     } else {
       playbackWanted = false;
+      playbackFailed = false;
+      clearAutoRecoveryTimer();
+      clearStallWatchdog();
       audioPlayer.pause();
       void persistCurrentProgress(true);
     }
@@ -718,6 +839,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Audio ended listener (for playlist progression)
     audioPlayer.addEventListener('ended', () => {
       playbackWanted = false;
+      playbackFailed = false;
+      clearAutoRecoveryTimer();
+      clearStallWatchdog();
       currentTrackCompleted = true;
       void clearCurrentProgress();
       if (isPlaylistMode && currentPlaylist) {
@@ -782,6 +906,11 @@ document.addEventListener('DOMContentLoaded', () => {
       playIcon.className = 'icon-play';
     });
 
+    // Stalls that never surface as a media `error` still need recovery.
+    audioPlayer.addEventListener('waiting', () => armStallWatchdog());
+    audioPlayer.addEventListener('stalled', () => armStallWatchdog());
+    audioPlayer.addEventListener('playing', () => clearStallWatchdog());
+
     audioPlayer.addEventListener('loadedmetadata', () => {
       audioPlayer.playbackRate = preferredPlaybackRate;
       if (pendingResumePosition >= 3 &&
@@ -798,6 +927,15 @@ document.addEventListener('DOMContentLoaded', () => {
         ? (audioPlayer.currentTime / audioPlayer.duration) * 100
         : 0;
       progressBar.style.width = `${progress}%`;
+
+      if (Number.isFinite(audioPlayer.currentTime)) {
+        lastKnownPosition = audioPlayer.currentTime;
+      }
+
+      // A long stretch of healthy playback earns a fresh auto-recovery budget.
+      if (autoRecoveryAttempts > 0 && Date.now() - lastFailureAt > autoRecoveryResetAfterMs) {
+        autoRecoveryAttempts = 0;
+      }
       
       // Update time display
       const currentTime = formatTime(audioPlayer.currentTime);
@@ -891,6 +1029,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') void persistCurrentProgress(true);
+    });
+
+    // The network came back: recover immediately instead of waiting for the
+    // user to notice the error and click play.
+    window.addEventListener('online', () => {
+      if (!playbackFailed) return;
+      autoRecoveryAttempts = 0;
+      clearAutoRecoveryTimer();
+      retryFailedPlayback('network back online');
     });
 
     window.addEventListener('pagehide', () => {
@@ -1040,8 +1187,11 @@ document.addEventListener('DOMContentLoaded', () => {
     statusMessage.className = `status-message ${type}`; // Uses new class names from HTML
     statusMessage.classList.add('show');
 
-    // Auto-hide after 3 seconds
-    setTimeout(() => {
+    // Auto-hide after 3 seconds. Cancel the previous timer so a newer message
+    // (e.g. the failure notice) is not wiped out early by an older one.
+    if (messageTimer !== null) window.clearTimeout(messageTimer);
+    messageTimer = window.setTimeout(() => {
+      messageTimer = null;
       statusMessage.classList.remove('show');
       statusMessage.textContent = '';
       statusMessage.className = 'status-message';
@@ -1131,6 +1281,9 @@ document.addEventListener('DOMContentLoaded', () => {
     customModalOverlay.style.display = 'none';
     modalPlaylistList.innerHTML = ''; // Clear list items
     modalMessageText.textContent = '';
+    // The empty-playlist fallback hides the confirm button; always restore it so
+    // the next modal is not left without a way to confirm.
+    modalConfirmBtn.style.display = '';
     // Event listeners for confirm/cancel are persistent, so they don't need to be removed here.
     // Only callbacks need to be cleared.
     // modalConfirmBtn.removeEventListener('click', handleConfirmClick);
@@ -1145,6 +1298,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function handleConfirmClick() {
     if (currentPlaylistSelectionCallback) {
+      // Confirming without picking a playlist used to close the dialog silently,
+      // which looks exactly like the favorite button doing nothing.
+      if (!selectedPlaylistForModal) {
+        showPlayerMessage('请先选择一个播放合集', 'info');
+        return;
+      }
       currentPlaylistSelectionCallback(selectedPlaylistForModal);
     } else if (currentConfirmCallback) {
       currentConfirmCallback();

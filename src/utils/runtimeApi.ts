@@ -15,3 +15,28 @@ export function requestBilibiliAudio(url: string, cid?: string): Promise<Bilibil
     );
   });
 }
+
+export interface OpenPlayerResult {
+  ok: boolean;
+  error?: string;
+}
+
+/**
+ * Ask the background worker to open the player window. The background answers
+ * with a status so callers can surface failures instead of appearing to do
+ * nothing when the request is rejected.
+ */
+export function requestOpenPlayer(data: BilibiliVideoInfo): Promise<OpenPlayerResult> {
+  return new Promise(resolve => {
+    chrome.runtime.sendMessage(
+      { action: 'openPlayer', data },
+      (response: OpenPlayerResult | undefined) => {
+        if (chrome.runtime.lastError) {
+          resolve({ ok: false, error: chrome.runtime.lastError.message });
+          return;
+        }
+        resolve(response || { ok: false, error: '后台服务没有响应' });
+      },
+    );
+  });
+}

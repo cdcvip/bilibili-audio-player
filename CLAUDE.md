@@ -71,7 +71,14 @@ Lessons from real bugs in this project. Prefer these rules over inventing a “s
 
 - **Never rely on a single CDN URL.** Bilibili returns `baseUrl`/`base_url` plus `backupUrl`/`backup_url`. Collect an ordered candidate list (`audioUrls`) and fail over before re-fetching.
 - **Do not prefer Dolby first in Chrome.** Standard `dash.audio` is more compatible; keep Dolby only as fallback after DASH.
-- **Cap recovery.** Try candidates in order, then at most **one** full re-fetch of playurl. Infinite retry loops surface as intermittent “播放失败，请稍后重试”.
+- **Cap recovery, but keep it resumable.** Try candidates in order, then at most **one** full re-fetch of playurl per attempt. Infinite tight retry loops surface as intermittent “播放失败，请稍后重试”. A capped budget must be **reset** afterwards (manual play, `online`, bounded backed-off auto-retry), otherwise the failure latch (`playbackWanted = false`) leaves the player permanently dead: clicking play just re-runs the exhausted loop and re-shows the same error without re-fetching.
+- **A dead stream does not always fire `error`.** Expired CDN URLs and dropped connections often only `stalled`/`waiting`; without a stall watchdog the player freezes silently, and without a retry on `online` it never comes back.
+- **Do not resume from `audioPlayer.currentTime` alone.** After a failed load it is back to `0`; track the last observed playback position so recovery resumes where the user actually was.
+
+### Player page initialization (`src/player.ts`)
+
+- **Declare all page state at the top of the `DOMContentLoaded` callback.** The callback runs top-to-bottom, so a `let` declared *below* its first use throws `ReferenceError: Cannot access '…' before initialization` (TDZ) and silently aborts everything after it — including the `initializeCustomControls()` call at the bottom. Symptom seen in the wild: opening `player.html?bvid=…&cid=…` (how the background opens the window) leaves every control dead, so clicking the favorite star does nothing at all.
+- **Keep `showPlayerMessage` callable from anywhere in the callback.** It is invoked synchronously by the URL-parameter bootstrap path, long before the file's later declarations are evaluated.
 - **Track generations, not just flags.** When switching tracks / parts / playlist items, bump `playerGeneration` and `audioRequestId`. Ignore stale `play()`, `onerror`, recovery, and in-flight `requestBilibiliAudio` results that no longer match.
 - **Respect user intent.** Set `playbackWanted = false` on pause / ended / autoplay-blocked. Recovery must not restart audio the user already stopped.
 - **Re-check generation after every `await`.** Classic race: `await checkIfVideoIsFavorited(...)` then assign `audioPlayer.onerror` / call `play()` for an old track and overwrite the new track’s handlers.
@@ -82,6 +89,13 @@ Lessons from real bugs in this project. Prefer these rules over inventing a “s
 - **Do not style open-state via a parent selector after portaling.** `.episode-control.is-open .episode-panel` stops matching once the panel is under `body`. Toggle an open class (or `[hidden]`) **on the panel itself**. Symptom: click “选集” appears to do nothing because the list stays `display: none`.
 - **Outside-click handlers must treat the portaled panel as inside.** Check both the trigger and `episodePanel.contains(target)`. Prefer `stopPropagation` on toggle/item clicks.
 - **Reposition on `resize` and capture-phase `scroll`.** Fixed coords go stale when the player container scrolls.
+
+### In-page button (`src/contentScript.ts`, `src/background.ts`)
+
+- **An extension reload orphans every content script in already-open tabs.** The floating 提取音频 button stays visible, but `chrome.runtime` is gone, so clicks can no longer reach the background. Symptom: the in-page button does nothing while the popup (always a fresh context) works fine. The background re-injects `contentScript.js` on install/update/startup (`reinjectContentScripts`), so the content script **must be idempotent** — remove any previous button/status node before creating new ones, or you get duplicate buttons.
+- **Never drop a message silently.** `openPlayer` used to be ignored whenever `isValidVideoInfo` failed, which is indistinguishable from the button being dead. Always `sendResponse` with `{ ok, error }` and surface it in the page.
+- **Detect an invalidated context before messaging.** `chrome.runtime.id` is `undefined` once the context dies; check it and tell the user to refresh the page instead of letting a cryptic English error escape. Avoid `alert()` for this — it is blocking and can be suppressed by the page; use the in-page status element.
+- **`scripting` permission** is required for the re-injection above. It does not add a user-facing permission warning, but it must stay in `public/manifest.json` for the heal to work.
 
 ### Versioning / release
 

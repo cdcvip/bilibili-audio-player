@@ -12,6 +12,31 @@ const AUTH_COOKIE_NAMES = [
 
 const BILIBILI_HOST_SUFFIX = '.bilibili.com';
 const CDN_HOST_SUFFIXES = ['.bilivideo.com', '.bilivideo.cn'];
+const CONTENT_SCRIPT_MATCHES = ['https://*.bilibili.com/video/*'];
+
+// Reloading or updating the extension orphans the content script in every tab
+// that is already open: the floating button stays on the page, but its
+// chrome.runtime is gone, so clicking it can no longer reach the background.
+// Re-injecting here keeps the button alive without a manual page refresh.
+async function reinjectContentScripts(): Promise<void> {
+  try {
+    const tabs = await chrome.tabs.query({ url: CONTENT_SCRIPT_MATCHES });
+    await Promise.all(tabs.map(async tab => {
+      if (typeof tab.id !== 'number') return;
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tab.id },
+          files: ['contentScript.js'],
+        });
+      } catch (error) {
+        // Discarded, loading, or otherwise unavailable tabs are expected here.
+        console.debug('Skipped content script re-injection for tab', tab.id, String(error));
+      }
+    }));
+  } catch (error) {
+    console.error('Failed to re-inject content scripts:', error);
+  }
+}
 
 // Restrict the Referer workaround to media initiated by this extension.
 async function setupCdnHeaderRules(): Promise<void> {
@@ -154,6 +179,7 @@ chrome.runtime.onInstalled.addListener(async () => {
       initSignData(),
       removeLegacySensitiveStorage(),
       setupContextMenu(),
+      reinjectContentScripts(),
     ]);
     console.log('Bilibili Audio Player extension initialized');
   } catch (error) {
@@ -163,7 +189,11 @@ chrome.runtime.onInstalled.addListener(async () => {
 
 chrome.runtime.onStartup.addListener(() => {
   void restrictStorageAccess()
-    .then(() => Promise.all([setupCdnHeaderRules(), removeLegacySensitiveStorage()]))
+    .then(() => Promise.all([
+      setupCdnHeaderRules(),
+      removeLegacySensitiveStorage(),
+      reinjectContentScripts(),
+    ]))
     .catch(error => console.error('插件启动时安全初始化失败:', error));
 });
 
@@ -198,8 +228,23 @@ chrome.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =>
     return false;
   }
 
-  if (request.action === 'openPlayer' && isValidVideoInfo(request.data)) {
-    openPlayer(request.data);
+  if (request.action === 'openPlayer') {
+    // Answer explicitly: a silently dropped message looks exactly like the
+    // in-page button doing nothing.
+    if (!isValidVideoInfo(request.data)) {
+      console.error('Rejected openPlayer request: invalid video info');
+      sendResponse({ ok: false, error: '音频信息无效，请重试' });
+      return false;
+    }
+
+    try {
+      openPlayer(request.data);
+      sendResponse({ ok: true });
+    } catch (error) {
+      console.error('Failed to open player window:', error);
+      sendResponse({ ok: false, error: '无法打开播放器窗口' });
+    }
+    return false;
   }
 
   return false;

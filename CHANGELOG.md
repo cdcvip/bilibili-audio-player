@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-10-17
+
+### Added
+- Bounded automatic playback recovery: after a failure the player retries on its own with 2s/5s/10s backoff (at most 3 attempts) and recovers immediately when the network comes back.
+- Stall watchdog for streams that die without firing a media `error` (expired CDN URL, dropped connection), which previously left the player frozen with no message.
+- In-page status feedback for the floating 提取音频 button: loading, success, and failure messages replace the blocking `alert()`.
+- Automatic re-injection of the content script after an extension install/update/startup, so the floating button keeps working in tabs that were already open.
+
+### Fixed
+- Playback could not recover after a transient failure: the capped recovery budget was never reset, so clicking play re-ran the exhausted loop without re-fetching the playurl and re-showed the same error indefinitely. Recovery now resumes where playback actually stopped instead of restarting from the beginning.
+- The in-page 提取音频 button appeared to do nothing when the background rejected a message, because `openPlayer` was dropped silently. The background now always answers and the page surfaces the reason.
+- Confirming the playlist picker without selecting a collection closed the dialog silently, which looked like the favorite button doing nothing.
+- A player status message could be wiped early by the previous message's auto-hide timer.
+
+### Changed
+- Added the `scripting` permission (no user-facing permission warning) to support content script re-injection.
+
 ## [1.2.1] - 2026-07-18
 
 ### Added
